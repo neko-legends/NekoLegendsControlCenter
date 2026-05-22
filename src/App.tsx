@@ -65,6 +65,7 @@ const themes: Theme[] = [
 ]
 
 const defaultCategories = ['Work Stuff', 'Fun Stuff']
+const githubOwner = 'neko-legends'
 
 const fallbackState: ControlCenterState = {
   settings: { theme: 'neko-tron', compactLabels: false, categories: defaultCategories },
@@ -337,7 +338,7 @@ export default function App() {
     try {
       await call<void>('open_release_url', { request: { appId: appInfo.id } })
     } catch (error) {
-      window.open(appInfo.releaseUrl ?? `https://github.com/flashosophy/${appInfo.repo}/releases`, '_blank', 'noopener')
+      window.open(appInfo.releaseUrl ?? `https://github.com/${githubOwner}/${appInfo.repo}/releases`, '_blank', 'noopener')
       setNotice(error instanceof Error ? error.message : String(error))
     }
   }
@@ -811,7 +812,7 @@ export default function App() {
             <div className="detail-meta">
               <div>
                 <span>Repository</span>
-                <strong>flashosophy/{selectedApp.repo}</strong>
+                <strong>{githubOwner}/{selectedApp.repo}</strong>
               </div>
               <div>
                 <span>Release</span>

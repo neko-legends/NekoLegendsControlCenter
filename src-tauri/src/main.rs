@@ -13,6 +13,7 @@ const MIN_WINDOW_WIDTH: u32 = 520;
 const MIN_WINDOW_HEIGHT: u32 = 390;
 const FALLBACK_WINDOW_WIDTH: u32 = 720;
 const FALLBACK_WINDOW_HEIGHT: u32 = 520;
+const GITHUB_OWNER: &str = "neko-legends";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -422,7 +423,7 @@ fn open_release_url(app: AppHandle, request: LaunchRequest) -> Result<(), String
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| format!("https://github.com/flashosophy/{}/releases", launcher_app.repo));
+        .unwrap_or_else(|| format!("https://github.com/{}/{}/releases", GITHUB_OWNER, launcher_app.repo));
     open::that(url).map_err(|err| err.to_string())
 }
 
@@ -437,8 +438,8 @@ async fn scan_releases(app: AppHandle) -> Result<Vec<LauncherApp>, String> {
 
     for launcher_app in apps.iter_mut() {
         let url = format!(
-            "https://api.github.com/repos/flashosophy/{}/releases/latest",
-            launcher_app.repo
+            "https://api.github.com/repos/{}/{}/releases/latest",
+            GITHUB_OWNER, launcher_app.repo
         );
         match client.get(url).send().await {
             Ok(response) if response.status().is_success() => {
@@ -454,8 +455,8 @@ async fn scan_releases(app: AppHandle) -> Result<Vec<LauncherApp>, String> {
             Ok(response) if response.status().as_u16() == 404 => {
                 launcher_app.latest_version = None;
                 launcher_app.release_url = Some(format!(
-                    "https://github.com/flashosophy/{}/releases",
-                    launcher_app.repo
+                    "https://github.com/{}/{}/releases",
+                    GITHUB_OWNER, launcher_app.repo
                 ));
                 launcher_app.release_notes = Some("No public releases found yet.".to_string());
                 launcher_app.release_checked_at = Some(checked_at.clone());
