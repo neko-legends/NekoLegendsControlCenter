@@ -40,6 +40,8 @@ struct LauncherApp {
 struct AppSettings {
     theme: String,
     compact_labels: bool,
+    #[serde(default = "default_categories")]
+    categories: Vec<String>,
     window_width: Option<u32>,
     window_height: Option<u32>,
 }
@@ -49,6 +51,7 @@ impl Default for AppSettings {
         Self {
             theme: "neko-tron".to_string(),
             compact_labels: false,
+            categories: default_categories(),
             window_width: None,
             window_height: None,
         }
@@ -69,6 +72,7 @@ struct ControlCenterState {
 struct SaveSettingsRequest {
     theme: Option<String>,
     compact_labels: Option<bool>,
+    categories: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,6 +86,7 @@ struct SaveExecutableRequest {
 #[serde(rename_all = "camelCase")]
 struct SaveLayoutRequest {
     apps: Vec<LauncherApp>,
+    categories: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,6 +108,25 @@ fn default_true() -> bool {
 
 fn default_category() -> String {
     "Work Stuff".to_string()
+}
+
+fn default_categories() -> Vec<String> {
+    vec!["Work Stuff".to_string(), "Fun Stuff".to_string()]
+}
+
+fn normalize_categories(categories: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for category in categories {
+        let trimmed = category.trim();
+        if !trimmed.is_empty() && !normalized.iter().any(|existing| existing == trimmed) {
+            normalized.push(trimmed.to_string());
+        }
+    }
+    if normalized.is_empty() {
+        default_categories()
+    } else {
+        normalized
+    }
 }
 
 fn default_apps() -> Vec<LauncherApp> {
@@ -180,6 +204,7 @@ fn read_settings(app: &AppHandle) -> AppSettings {
     if settings.theme == "eva-dark" {
         settings.theme = "neko-tron".to_string();
     }
+    settings.categories = normalize_categories(settings.categories);
     settings
 }
 
@@ -301,6 +326,9 @@ fn save_settings(app: AppHandle, request: SaveSettingsRequest) -> Result<AppSett
     if let Some(compact_labels) = request.compact_labels {
         settings.compact_labels = compact_labels;
     }
+    if let Some(categories) = request.categories {
+        settings.categories = normalize_categories(categories);
+    }
     write_json_file(&settings_path(&app)?, &settings)?;
     Ok(settings)
 }
@@ -322,20 +350,26 @@ fn save_executable(app: AppHandle, request: SaveExecutableRequest) -> Result<Vec
 }
 
 #[tauri::command]
-fn save_layout(app: AppHandle, request: SaveLayoutRequest) -> Result<Vec<LauncherApp>, String> {
+fn save_layout(app: AppHandle, request: SaveLayoutRequest) -> Result<ControlCenterState, String> {
     let mut next_apps = merge_default_apps(request.apps);
+    let mut settings = read_settings(&app);
     if next_apps.iter().all(|candidate| !candidate.visible) {
         for candidate in next_apps.iter_mut() {
             candidate.visible = true;
         }
     }
+    if let Some(categories) = request.categories {
+        settings.categories = normalize_categories(categories);
+        write_json_file(&settings_path(&app)?, &settings)?;
+    }
     save_apps(&app, &next_apps)?;
-    Ok(next_apps)
+    get_state(app)
 }
 
 #[tauri::command]
-fn reset_layout(app: AppHandle) -> Result<Vec<LauncherApp>, String> {
+fn reset_layout(app: AppHandle) -> Result<ControlCenterState, String> {
     let current_apps = read_apps(&app);
+    let mut settings = read_settings(&app);
     let mut reset_apps = Vec::new();
 
     for mut default_app in default_apps() {
@@ -352,7 +386,9 @@ fn reset_layout(app: AppHandle) -> Result<Vec<LauncherApp>, String> {
     }
 
     save_apps(&app, &reset_apps)?;
-    Ok(reset_apps)
+    settings.categories = default_categories();
+    write_json_file(&settings_path(&app)?, &settings)?;
+    get_state(app)
 }
 
 #[tauri::command]

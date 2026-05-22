@@ -387,6 +387,75 @@ button {
   overflow: hidden;
 }
 
+.category-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.category-chip,
+.category-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--accent) 36%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-2) 86%, #000);
+  color: var(--accent-2);
+  font-size: 11px;
+  font-weight: 850;
+  text-shadow: 0 0 8px rgb(255 176 0 / 0.34);
+}
+
+.category-chip {
+  max-width: 150px;
+  padding: 0 5px 0 6px;
+  cursor: grab;
+}
+
+.category-chip > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.category-chip button,
+.category-add {
+  cursor: pointer;
+}
+
+.category-chip button {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.category-chip button:hover,
+.category-add:hover {
+  color: var(--accent);
+}
+
+.category-chip button:disabled {
+  cursor: not-allowed;
+  opacity: 0.38;
+}
+
+.category-add {
+  flex: 0 0 auto;
+  padding: 0 9px;
+}
+
 .app-toggle {
   display: inline-grid;
   place-items: center;
@@ -457,11 +526,13 @@ button {
 .category-row {
   display: flex;
   align-items: center;
+  gap: 6px;
   grid-column: 1 / -1;
   min-width: 0;
   min-height: 18px;
   max-height: 22px;
   color: var(--accent-2);
+  cursor: grab;
   font-size: 12px;
   font-weight: 900;
   letter-spacing: 0;

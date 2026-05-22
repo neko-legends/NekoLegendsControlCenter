@@ -5,11 +5,15 @@ import {
   Download,
   ExternalLink,
   FolderOpen,
+  GripVertical,
   Loader2,
+  Pencil,
   Play,
+  Plus,
   RefreshCw,
   Settings2,
   Sparkles,
+  Trash2,
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
@@ -35,6 +39,7 @@ type LauncherApp = {
 type AppSettings = {
   theme: ThemeId
   compactLabels: boolean
+  categories: string[]
 }
 
 type ControlCenterState = {
@@ -59,8 +64,10 @@ const themes: Theme[] = [
   { id: 'rose-noir', name: 'Rose', colors: ['#21191b', '#322629', '#e07383'] },
 ]
 
+const defaultCategories = ['Work Stuff', 'Fun Stuff']
+
 const fallbackState: ControlCenterState = {
-  settings: { theme: 'neko-tron', compactLabels: false },
+  settings: { theme: 'neko-tron', compactLabels: false, categories: defaultCategories },
   buildVersion: 'dev',
   dataDir: '',
   apps: [
@@ -133,27 +140,47 @@ function categoryLabel(category: string): string {
   return value || 'Work Stuff'
 }
 
+function normalizeCategories(categories: string[]): string[] {
+  const normalized: string[] = []
+  for (const category of categories) {
+    const value = categoryLabel(category)
+    if (!normalized.includes(value)) {
+      normalized.push(value)
+    }
+  }
+  return normalized.length > 0 ? normalized : defaultCategories
+}
+
+function orderedCategories(apps: LauncherApp[], categories: string[]): string[] {
+  const nextCategories = normalizeCategories(categories)
+  for (const appInfo of apps) {
+    const category = categoryLabel(appInfo.category)
+    if (!nextCategories.includes(category)) {
+      nextCategories.push(category)
+    }
+  }
+  return nextCategories
+}
+
 type GridItem =
   | { kind: 'category'; id: string; label: string }
   | { kind: 'app'; app: LauncherApp }
 
-function gridItems(apps: LauncherApp[]): GridItem[] {
+function gridItems(apps: LauncherApp[], categories: string[]): GridItem[] {
   const items: GridItem[] = []
-  let lastCategory = ''
 
-  for (const appInfo of apps) {
-    const category = categoryLabel(appInfo.category)
-    if (category !== lastCategory) {
-      items.push({ kind: 'category', id: `category-${category}`, label: category })
-      lastCategory = category
+  for (const category of categories) {
+    items.push({ kind: 'category', id: `category-${category}`, label: category })
+    for (const appInfo of apps.filter((candidate) => categoryLabel(candidate.category) === category)) {
+      items.push({ kind: 'app', app: appInfo })
     }
-    items.push({ kind: 'app', app: appInfo })
   }
 
   return items
 }
 
-function moveApp(apps: LauncherApp[], fromId: string, toId: string): LauncherApp[] {
+function moveAppToApp(apps: LauncherApp[], fromId: string, target: LauncherApp): LauncherApp[] {
+  const toId = target.id
   if (fromId === toId) return apps
   const fromIndex = apps.findIndex((candidate) => candidate.id === fromId)
   const toIndex = apps.findIndex((candidate) => candidate.id === toId)
@@ -161,9 +188,44 @@ function moveApp(apps: LauncherApp[], fromId: string, toId: string): LauncherApp
 
   const nextApps = [...apps]
   const [moved] = nextApps.splice(fromIndex, 1)
-  nextApps.splice(toIndex, 0, moved)
+  const nextToIndex = nextApps.findIndex((candidate) => candidate.id === toId)
+  nextApps.splice(nextToIndex, 0, { ...moved, category: categoryLabel(target.category) })
   return nextApps
 }
+
+function moveAppToCategory(apps: LauncherApp[], appId: string, category: string): LauncherApp[] {
+  const fromIndex = apps.findIndex((candidate) => candidate.id === appId)
+  if (fromIndex < 0) return apps
+
+  const nextApps = [...apps]
+  const [moved] = nextApps.splice(fromIndex, 1)
+  const normalizedCategory = categoryLabel(category)
+  let lastCategoryIndex = -1
+  for (let index = nextApps.length - 1; index >= 0; index -= 1) {
+    if (categoryLabel(nextApps[index].category) === normalizedCategory) {
+      lastCategoryIndex = index
+      break
+    }
+  }
+  nextApps.splice(lastCategoryIndex + 1, 0, { ...moved, category: normalizedCategory })
+  return nextApps
+}
+
+function moveCategory(categories: string[], from: string, to: string): string[] {
+  if (from === to) return categories
+  const nextCategories = normalizeCategories(categories)
+  const fromIndex = nextCategories.indexOf(from)
+  const toIndex = nextCategories.indexOf(to)
+  if (fromIndex < 0 || toIndex < 0) return categories
+  const [moved] = nextCategories.splice(fromIndex, 1)
+  const nextToIndex = nextCategories.indexOf(to)
+  nextCategories.splice(nextToIndex, 0, moved)
+  return nextCategories
+}
+
+type DragItem =
+  | { kind: 'app'; id: string }
+  | { kind: 'category'; label: string }
 
 export default function App() {
   const [state, setState] = useState<ControlCenterState>(fallbackState)
@@ -171,7 +233,7 @@ export default function App() {
   const [notice, setNotice] = useState('Ready')
   const [selectedId, setSelectedId] = useState<string>('venice-media-local')
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [draggedId, setDraggedId] = useState<string | null>(null)
+  const [draggedItem, setDraggedItem] = useState<DragItem | null>(null)
 
   const visibleApps = useMemo(() => state.apps.filter((candidate) => candidate.visible), [state.apps])
   const selectedApp = useMemo(
@@ -182,7 +244,8 @@ export default function App() {
   const configuredCount = visibleApps.filter((candidate) => candidate.executablePath).length
   const updateCount = visibleApps.filter((candidate) => versionStatus(candidate) === 'update').length
   const hiddenCount = state.apps.length - visibleApps.length
-  const visibleGridItems = useMemo(() => gridItems(visibleApps), [visibleApps])
+  const layoutCategories = useMemo(() => orderedCategories(state.apps, state.settings.categories), [state.apps, state.settings.categories])
+  const visibleGridItems = useMemo(() => gridItems(visibleApps, layoutCategories), [layoutCategories, visibleApps])
 
   useEffect(() => {
     void loadState()
@@ -288,8 +351,9 @@ export default function App() {
     }
   }
 
-  async function persistLayout(apps: LauncherApp[], message: string) {
-    setState((current) => ({ ...current, apps }))
+  async function persistLayout(apps: LauncherApp[], message: string, categories = layoutCategories) {
+    const nextCategories = normalizeCategories(categories)
+    setState((current) => ({ ...current, apps, settings: { ...current.settings, categories: nextCategories } }))
     const nextVisibleApps = apps.filter((candidate) => candidate.visible)
     setSelectedId((current) => nextVisibleApps.some((candidate) => candidate.id === current) ? current : nextVisibleApps[0]?.id ?? apps[0]?.id ?? '')
 
@@ -299,21 +363,85 @@ export default function App() {
     }
 
     try {
-      const savedApps = await call<LauncherApp[]>('save_layout', { request: { apps } })
-      setState((current) => ({ ...current, apps: savedApps }))
+      const savedState = await call<ControlCenterState>('save_layout', { request: { apps, categories: nextCategories } })
+      setState(savedState)
       setNotice(message)
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error))
     }
   }
 
-  function handleDrop(targetId: string) {
-    if (!draggedId) return
-    const apps = moveApp(state.apps, draggedId, targetId)
-    setDraggedId(null)
+  function handleDropOnApp(target: LauncherApp) {
+    if (!draggedItem) return
+    const nextCategories = orderedCategories(state.apps, state.settings.categories)
+    setDraggedItem(null)
+    if (draggedItem.kind === 'category') {
+      const categories = moveCategory(nextCategories, draggedItem.label, categoryLabel(target.category))
+      if (categories !== nextCategories) {
+        void persistLayout(state.apps, 'Category moved', categories)
+      }
+      return
+    }
+
+    const apps = moveAppToApp(state.apps, draggedItem.id, target)
     if (apps !== state.apps) {
       void persistLayout(apps, 'Layout saved')
     }
+  }
+
+  function handleDropOnCategory(category: string) {
+    if (!draggedItem) return
+    const nextCategories = orderedCategories(state.apps, state.settings.categories)
+    setDraggedItem(null)
+    if (draggedItem.kind === 'category') {
+      const categories = moveCategory(nextCategories, draggedItem.label, category)
+      if (categories !== nextCategories) {
+        void persistLayout(state.apps, 'Category moved', categories)
+      }
+      return
+    }
+
+    const apps = moveAppToCategory(state.apps, draggedItem.id, category)
+    if (apps !== state.apps) {
+      void persistLayout(apps, 'App moved')
+    }
+  }
+
+  function addCategory() {
+    const rawName = window.prompt('Category name', 'New Category')
+    if (rawName === null) return
+    const name = categoryLabel(rawName)
+    if (layoutCategories.includes(name)) {
+      setNotice('Category already exists')
+      return
+    }
+    void persistLayout(state.apps, 'Category added', [...layoutCategories, name])
+  }
+
+  function renameCategory(category: string) {
+    const rawName = window.prompt('Category name', category)
+    if (rawName === null) return
+    const name = categoryLabel(rawName)
+    if (name === category) return
+    if (layoutCategories.includes(name)) {
+      setNotice('Category already exists')
+      return
+    }
+    const categories = layoutCategories.map((candidate) => candidate === category ? name : candidate)
+    const apps = state.apps.map((appInfo) => categoryLabel(appInfo.category) === category ? { ...appInfo, category: name } : appInfo)
+    void persistLayout(apps, 'Category renamed', categories)
+  }
+
+  function deleteCategory(category: string) {
+    if (layoutCategories.length <= 1) {
+      setNotice('At least one category must stay visible')
+      return
+    }
+    if (!window.confirm(`Delete ${category}? Apps in it will move to the first category.`)) return
+    const categories = layoutCategories.filter((candidate) => candidate !== category)
+    const fallbackCategory = categories[0] ?? defaultCategories[0]
+    const apps = state.apps.map((appInfo) => categoryLabel(appInfo.category) === category ? { ...appInfo, category: fallbackCategory } : appInfo)
+    void persistLayout(apps, 'Category deleted', categories)
   }
 
   function setAppVisible(appId: string, visible: boolean) {
@@ -331,15 +459,15 @@ export default function App() {
     try {
       if (!isTauriRuntime()) {
         const apps = fallbackState.apps.map((candidate) => ({ ...candidate, visible: true }))
-        setState((current) => ({ ...current, apps }))
+        setState((current) => ({ ...current, apps, settings: { ...current.settings, categories: defaultCategories } }))
         setSelectedId(apps[0]?.id ?? '')
         setNotice('Layout reset')
         return
       }
 
-      const apps = await call<LauncherApp[]>('reset_layout')
-      setState((current) => ({ ...current, apps }))
-      setSelectedId(apps.find((candidate) => candidate.visible)?.id ?? apps[0]?.id ?? '')
+      const nextState = await call<ControlCenterState>('reset_layout')
+      setState(nextState)
+      setSelectedId(nextState.apps.find((candidate) => candidate.visible)?.id ?? nextState.apps[0]?.id ?? '')
       setNotice('Layout reset')
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error))
@@ -402,6 +530,42 @@ export default function App() {
                 </label>
               ))}
             </div>
+            <div className="category-tools" aria-label="Categories">
+              {layoutCategories.map((category) => (
+                <span
+                  className="category-chip"
+                  key={category}
+                  draggable
+                  onDragStart={(event) => {
+                    setDraggedItem({ kind: 'category', label: category })
+                    event.dataTransfer.effectAllowed = 'move'
+                    event.dataTransfer.setData('text/plain', category)
+                  }}
+                  onDragOver={(event) => {
+                    event.preventDefault()
+                    event.dataTransfer.dropEffect = 'move'
+                  }}
+                  onDragEnd={() => setDraggedItem(null)}
+                  onDrop={(event) => {
+                    event.preventDefault()
+                    handleDropOnCategory(category)
+                  }}
+                >
+                  <GripVertical size={12} />
+                  <span>{category}</span>
+                  <button type="button" onClick={() => renameCategory(category)} title={`Rename ${category}`}>
+                    <Pencil size={12} />
+                  </button>
+                  <button type="button" onClick={() => deleteCategory(category)} disabled={layoutCategories.length <= 1} title={`Delete ${category}`}>
+                    <Trash2 size={12} />
+                  </button>
+                </span>
+              ))}
+              <button className="category-add" type="button" onClick={addCategory} title="Add category">
+                <Plus size={14} />
+                <span>Category</span>
+              </button>
+            </div>
           </div>
           <div className="settings-actions">
             <label className="toggle-row">
@@ -428,7 +592,26 @@ export default function App() {
           {visibleGridItems.map((item) => {
             if (item.kind === 'category') {
               return (
-                <div className="category-row" key={item.id}>
+                <div
+                  className="category-row"
+                  key={item.id}
+                  draggable
+                  onDragStart={(event) => {
+                    setDraggedItem({ kind: 'category', label: item.label })
+                    event.dataTransfer.effectAllowed = 'move'
+                    event.dataTransfer.setData('text/plain', item.label)
+                  }}
+                  onDragOver={(event) => {
+                    event.preventDefault()
+                    event.dataTransfer.dropEffect = 'move'
+                  }}
+                  onDragEnd={() => setDraggedItem(null)}
+                  onDrop={(event) => {
+                    event.preventDefault()
+                    handleDropOnCategory(item.label)
+                  }}
+                >
+                  <GripVertical size={13} />
                   <span>{`-= ${item.label} =-`}</span>
                 </div>
               )
@@ -445,7 +628,7 @@ export default function App() {
                 style={{ '--app-accent': appInfo.accent } as React.CSSProperties}
                 draggable
                 onDragStart={(event) => {
-                  setDraggedId(appInfo.id)
+                  setDraggedItem({ kind: 'app', id: appInfo.id })
                   event.dataTransfer.effectAllowed = 'move'
                   event.dataTransfer.setData('text/plain', appInfo.id)
                 }}
@@ -453,10 +636,10 @@ export default function App() {
                   event.preventDefault()
                   event.dataTransfer.dropEffect = 'move'
                 }}
-                onDragEnd={() => setDraggedId(null)}
+                onDragEnd={() => setDraggedItem(null)}
                 onDrop={(event) => {
                   event.preventDefault()
-                  handleDrop(appInfo.id)
+                  handleDropOnApp(appInfo)
                 }}
                 onClick={() => setSelectedId(appInfo.id)}
                 onDoubleClick={() => appInfo.executablePath ? void launchSelected() : void chooseExecutable(appInfo)}
