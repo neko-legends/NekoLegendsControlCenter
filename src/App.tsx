@@ -28,6 +28,7 @@ type LauncherApp = {
   releaseUrl: string | null
   releaseCheckedAt: string | null
   releaseNotes: string | null
+  visible: boolean
 }
 
 type AppSettings = {
@@ -88,6 +89,7 @@ function app(id: string, name: string, repo: string, description: string, accent
     releaseUrl: null,
     releaseCheckedAt: null,
     releaseNotes: null,
+    visible: true,
   }
 }
 
@@ -124,20 +126,37 @@ function fileName(path: string | null): string {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path
 }
 
+function moveApp(apps: LauncherApp[], fromId: string, toId: string): LauncherApp[] {
+  if (fromId === toId) return apps
+  const fromIndex = apps.findIndex((candidate) => candidate.id === fromId)
+  const toIndex = apps.findIndex((candidate) => candidate.id === toId)
+  if (fromIndex < 0 || toIndex < 0) return apps
+
+  const nextApps = [...apps]
+  const [moved] = nextApps.splice(fromIndex, 1)
+  nextApps.splice(toIndex, 0, moved)
+  return nextApps
+}
+
 export default function App() {
   const [state, setState] = useState<ControlCenterState>(fallbackState)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('Ready')
   const [selectedId, setSelectedId] = useState<string>('venice-media-local')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [draggedId, setDraggedId] = useState<string | null>(null)
 
+  const visibleApps = useMemo(() => state.apps.filter((candidate) => candidate.visible), [state.apps])
   const selectedApp = useMemo(
-    () => state.apps.find((candidate) => candidate.id === selectedId) ?? state.apps[0],
-    [selectedId, state.apps],
+    () => visibleApps.find((candidate) => candidate.id === selectedId) ?? visibleApps[0] ?? state.apps[0],
+    [selectedId, state.apps, visibleApps],
   )
 
-  const configuredCount = state.apps.filter((candidate) => candidate.executablePath).length
-  const updateCount = state.apps.filter((candidate) => versionStatus(candidate) === 'update').length
+  const configuredCount = visibleApps.filter((candidate) => candidate.executablePath).length
+  const updateCount = visibleApps.filter((candidate) => versionStatus(candidate) === 'update').length
+  const hiddenCount = state.apps.length - visibleApps.length
+  const gridColumns = visibleApps.length <= 2 ? visibleApps.length : visibleApps.length <= 4 ? 2 : 3
+  const gridRows = Math.max(1, Math.ceil(Math.max(1, visibleApps.length) / Math.max(1, gridColumns)))
 
   useEffect(() => {
     void loadState()
@@ -152,7 +171,8 @@ export default function App() {
     try {
       const nextState = await call<ControlCenterState>('get_state')
       setState(nextState)
-      setSelectedId((current) => nextState.apps.some((candidate) => candidate.id === current) ? current : nextState.apps[0]?.id ?? '')
+      const nextVisibleApps = nextState.apps.filter((candidate) => candidate.visible)
+      setSelectedId((current) => nextVisibleApps.some((candidate) => candidate.id === current) ? current : nextVisibleApps[0]?.id ?? nextState.apps[0]?.id ?? '')
       setNotice('Ready')
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error))
@@ -242,6 +262,66 @@ export default function App() {
     }
   }
 
+  async function persistLayout(apps: LauncherApp[], message: string) {
+    setState((current) => ({ ...current, apps }))
+    const nextVisibleApps = apps.filter((candidate) => candidate.visible)
+    setSelectedId((current) => nextVisibleApps.some((candidate) => candidate.id === current) ? current : nextVisibleApps[0]?.id ?? apps[0]?.id ?? '')
+
+    if (!isTauriRuntime()) {
+      setNotice(message)
+      return
+    }
+
+    try {
+      const savedApps = await call<LauncherApp[]>('save_layout', { request: { apps } })
+      setState((current) => ({ ...current, apps: savedApps }))
+      setNotice(message)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  function handleDrop(targetId: string) {
+    if (!draggedId) return
+    const apps = moveApp(state.apps, draggedId, targetId)
+    setDraggedId(null)
+    if (apps !== state.apps) {
+      void persistLayout(apps, 'Layout saved')
+    }
+  }
+
+  function setAppVisible(appId: string, visible: boolean) {
+    const visibleCount = state.apps.filter((candidate) => candidate.visible).length
+    if (!visible && visibleCount <= 1) {
+      setNotice('At least one app must stay visible')
+      return
+    }
+    const apps = state.apps.map((candidate) => candidate.id === appId ? { ...candidate, visible } : candidate)
+    void persistLayout(apps, visible ? 'App shown' : 'App hidden')
+  }
+
+  async function resetLayout() {
+    setBusy(true)
+    try {
+      if (!isTauriRuntime()) {
+        const apps = fallbackState.apps.map((candidate) => ({ ...candidate, visible: true }))
+        setState((current) => ({ ...current, apps }))
+        setSelectedId(apps[0]?.id ?? '')
+        setNotice('Layout reset')
+        return
+      }
+
+      const apps = await call<LauncherApp[]>('reset_layout')
+      setState((current) => ({ ...current, apps }))
+      setSelectedId(apps.find((candidate) => candidate.visible)?.id ?? apps[0]?.id ?? '')
+      setNotice('Layout reset')
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div className={classNames('app-shell', `theme-${state.settings.theme}`, state.settings.compactLabels && 'compact-labels')}>
       <header className="topbar">
@@ -251,7 +331,7 @@ export default function App() {
           </div>
           <div>
             <h1>Neko Legends Control Center</h1>
-            <p>{configuredCount}/{state.apps.length} apps wired · {updateCount} updates</p>
+            <p>{configuredCount}/{visibleApps.length} apps wired · {updateCount} updates{hiddenCount > 0 ? ` · ${hiddenCount} hidden` : ''}</p>
           </div>
         </div>
         <div className="topbar-actions">
@@ -267,36 +347,59 @@ export default function App() {
 
       {settingsOpen && (
         <section className="settings-band">
-          <div className="theme-row">
-            {themes.map((theme) => (
-              <button
-                className={classNames('theme-button', state.settings.theme === theme.id && 'active')}
-                type="button"
-                key={theme.id}
-                onClick={() => void setTheme(theme.id)}
-                title={theme.name}
-              >
-                <span className="swatches">
-                  {theme.colors.map((color) => <i key={color} style={{ background: color }} />)}
-                </span>
-                <strong>{theme.name}</strong>
-              </button>
-            ))}
+          <div className="settings-main">
+            <div className="theme-row">
+              {themes.map((theme) => (
+                <button
+                  className={classNames('theme-button', state.settings.theme === theme.id && 'active')}
+                  type="button"
+                  key={theme.id}
+                  onClick={() => void setTheme(theme.id)}
+                  title={theme.name}
+                >
+                  <span className="swatches">
+                    {theme.colors.map((color) => <i key={color} style={{ background: color }} />)}
+                  </span>
+                  <strong>{theme.name}</strong>
+                </button>
+              ))}
+            </div>
+            <div className="visibility-row" aria-label="Visible apps">
+              {state.apps.map((appInfo) => (
+                <label className={classNames('app-toggle', !appInfo.visible && 'hidden')} key={appInfo.id} title={appInfo.name}>
+                  <input
+                    type="checkbox"
+                    checked={appInfo.visible}
+                    onChange={(event) => setAppVisible(appInfo.id, event.currentTarget.checked)}
+                  />
+                  <span>{appInfo.icon}</span>
+                </label>
+              ))}
+            </div>
           </div>
-          <label className="toggle-row">
-            <input
-              type="checkbox"
-              checked={state.settings.compactLabels}
-              onChange={(event) => void setCompactLabels(event.currentTarget.checked)}
-            />
-            <span>Compact labels</span>
-          </label>
+          <div className="settings-actions">
+            <label className="toggle-row">
+              <input
+                type="checkbox"
+                checked={state.settings.compactLabels}
+                onChange={(event) => void setCompactLabels(event.currentTarget.checked)}
+              />
+              <span>Compact labels</span>
+            </label>
+            <button className="secondary-action reset-action" type="button" onClick={resetLayout} disabled={busy}>
+              Reset layout
+            </button>
+          </div>
         </section>
       )}
 
       <main className="launcher-layout">
-        <section className="app-grid" aria-label="App launcher">
-          {state.apps.map((appInfo) => {
+        <section
+          className="app-grid"
+          aria-label="App launcher"
+          style={{ '--grid-columns': Math.max(1, gridColumns), '--grid-rows': gridRows } as React.CSSProperties}
+        >
+          {visibleApps.map((appInfo) => {
             const selected = appInfo.id === selectedApp?.id
             const status = versionStatus(appInfo)
             return (
@@ -305,6 +408,21 @@ export default function App() {
                 type="button"
                 className={classNames('app-tile', selected && 'selected')}
                 style={{ '--app-accent': appInfo.accent } as React.CSSProperties}
+                draggable
+                onDragStart={(event) => {
+                  setDraggedId(appInfo.id)
+                  event.dataTransfer.effectAllowed = 'move'
+                  event.dataTransfer.setData('text/plain', appInfo.id)
+                }}
+                onDragOver={(event) => {
+                  event.preventDefault()
+                  event.dataTransfer.dropEffect = 'move'
+                }}
+                onDragEnd={() => setDraggedId(null)}
+                onDrop={(event) => {
+                  event.preventDefault()
+                  handleDrop(appInfo.id)
+                }}
                 onClick={() => setSelectedId(appInfo.id)}
                 onDoubleClick={() => appInfo.executablePath ? void launchSelected() : void chooseExecutable(appInfo)}
               >

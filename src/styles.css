@@ -294,15 +294,22 @@ button {
 
 .settings-band {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   justify-content: space-between;
   gap: 12px;
-  min-height: 58px;
+  min-height: 82px;
   padding: 9px 16px;
   border-bottom: 1px solid var(--border);
   background:
     linear-gradient(90deg, rgb(255 106 0 / 0.08), transparent 42%),
     color-mix(in srgb, var(--surface) 76%, var(--surface-2));
+}
+
+.settings-main {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
 }
 
 .theme-row {
@@ -364,6 +371,60 @@ button {
   white-space: nowrap;
 }
 
+.settings-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: max-content;
+}
+
+.visibility-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.app-toggle {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--border));
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent-2) 22%, transparent), transparent),
+    var(--surface-2);
+  color: var(--accent-2);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 900;
+  text-shadow: 0 0 8px rgb(255 176 0 / 0.48);
+}
+
+.app-toggle input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.app-toggle.hidden {
+  border-color: color-mix(in srgb, var(--border) 76%, transparent);
+  background: var(--surface);
+  color: var(--muted);
+  opacity: 0.54;
+  text-shadow: none;
+}
+
+.reset-action {
+  min-height: 34px;
+  padding: 0 10px;
+}
+
 .toggle-row input {
   width: 17px;
   height: 17px;
@@ -385,8 +446,8 @@ button {
 
 .app-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  grid-template-rows: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--grid-columns), minmax(0, 1fr));
+  grid-template-rows: repeat(var(--grid-rows), minmax(0, 1fr));
   gap: 10px;
   height: 100%;
   min-width: 0;
@@ -410,6 +471,14 @@ button {
   border-color: var(--border);
   box-shadow: inset 0 0 0 1px rgb(255 176 0 / 0.035);
   text-align: left;
+}
+
+.app-tile:active {
+  cursor: grabbing;
+}
+
+.app-tile[draggable="true"] {
+  cursor: grab;
 }
 
 .app-tile:hover,
@@ -621,6 +690,14 @@ button {
 
   .theme-row {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .settings-actions {
+    justify-content: space-between;
+  }
+
+  .visibility-row {
+    flex-wrap: wrap;
   }
 
   .launcher-layout {

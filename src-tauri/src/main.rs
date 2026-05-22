@@ -29,6 +29,8 @@ struct LauncherApp {
     release_url: Option<String>,
     release_checked_at: Option<String>,
     release_notes: Option<String>,
+    #[serde(default = "default_true")]
+    visible: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +78,12 @@ struct SaveExecutableRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SaveLayoutRequest {
+    apps: Vec<LauncherApp>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct LaunchRequest {
     app_id: String,
 }
@@ -85,6 +93,10 @@ struct GitHubRelease {
     tag_name: String,
     html_url: String,
     body: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_apps() -> Vec<LauncherApp> {
@@ -115,6 +127,7 @@ fn app(id: &str, name: &str, repo: &str, description: &str, accent: &str, icon: 
         release_url: None,
         release_checked_at: None,
         release_notes: None,
+        visible: true,
     }
 }
 
@@ -172,17 +185,28 @@ fn read_apps(app: &AppHandle) -> Vec<LauncherApp> {
 
 fn merge_default_apps(saved: Vec<LauncherApp>) -> Vec<LauncherApp> {
     let mut merged = Vec::new();
-    for mut default_app in default_apps() {
-        if let Some(existing) = saved.iter().find(|candidate| candidate.id == default_app.id) {
-            default_app.executable_path = existing.executable_path.clone();
-            default_app.installed_version = existing.installed_version.clone();
-            default_app.latest_version = existing.latest_version.clone();
-            default_app.release_url = existing.release_url.clone();
-            default_app.release_checked_at = existing.release_checked_at.clone();
-            default_app.release_notes = existing.release_notes.clone();
+    let defaults = default_apps();
+
+    for saved_app in saved {
+        if let Some(default_app) = defaults.iter().find(|candidate| candidate.id == saved_app.id) {
+            let mut app = default_app.clone();
+            app.executable_path = saved_app.executable_path;
+            app.installed_version = saved_app.installed_version;
+            app.latest_version = saved_app.latest_version;
+            app.release_url = saved_app.release_url;
+            app.release_checked_at = saved_app.release_checked_at;
+            app.release_notes = saved_app.release_notes;
+            app.visible = saved_app.visible;
+            merged.push(app);
         }
-        merged.push(default_app);
     }
+
+    for default_app in defaults {
+        if !merged.iter().any(|candidate| candidate.id == default_app.id) {
+            merged.push(default_app);
+        }
+    }
+
     merged
 }
 
@@ -285,6 +309,40 @@ fn save_executable(app: AppHandle, request: SaveExecutableRequest) -> Result<Vec
     target.executable_path = Some(path.to_string_lossy().to_string());
     save_apps(&app, &apps)?;
     Ok(apps)
+}
+
+#[tauri::command]
+fn save_layout(app: AppHandle, request: SaveLayoutRequest) -> Result<Vec<LauncherApp>, String> {
+    let mut next_apps = merge_default_apps(request.apps);
+    if next_apps.iter().all(|candidate| !candidate.visible) {
+        for candidate in next_apps.iter_mut() {
+            candidate.visible = true;
+        }
+    }
+    save_apps(&app, &next_apps)?;
+    Ok(next_apps)
+}
+
+#[tauri::command]
+fn reset_layout(app: AppHandle) -> Result<Vec<LauncherApp>, String> {
+    let current_apps = read_apps(&app);
+    let mut reset_apps = Vec::new();
+
+    for mut default_app in default_apps() {
+        if let Some(existing) = current_apps.iter().find(|candidate| candidate.id == default_app.id) {
+            default_app.executable_path = existing.executable_path.clone();
+            default_app.installed_version = existing.installed_version.clone();
+            default_app.latest_version = existing.latest_version.clone();
+            default_app.release_url = existing.release_url.clone();
+            default_app.release_checked_at = existing.release_checked_at.clone();
+            default_app.release_notes = existing.release_notes.clone();
+        }
+        default_app.visible = true;
+        reset_apps.push(default_app);
+    }
+
+    save_apps(&app, &reset_apps)?;
+    Ok(reset_apps)
 }
 
 #[tauri::command]
@@ -396,6 +454,8 @@ fn main() {
             get_state,
             save_settings,
             save_executable,
+            save_layout,
+            reset_layout,
             launch_app,
             open_release_url,
             scan_releases,
