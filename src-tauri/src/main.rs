@@ -23,6 +23,8 @@ struct LauncherApp {
     description: String,
     accent: String,
     icon: String,
+    #[serde(default = "default_category")]
+    category: String,
     executable_path: Option<String>,
     installed_version: Option<String>,
     latest_version: Option<String>,
@@ -99,21 +101,25 @@ fn default_true() -> bool {
     true
 }
 
+fn default_category() -> String {
+    "Work Stuff".to_string()
+}
+
 fn default_apps() -> Vec<LauncherApp> {
     vec![
-        app("batchlapse", "BatchLapse", "BatchLapse", "Batch tools for image and media workflows.", "#5b8def", "BL"),
-        app("depth-map-ai-generator", "DepthMap AI", "DepthMapAIGenerator", "Depth map generation utilities.", "#43b883", "DM"),
-        app("image-to-ascii-3d", "ASCII 3D", "ImageToASCII3D", "Image-to-ASCII 3D conversion.", "#f0a848", "A3"),
-        app("markrush", "MarkRush", "MarkRush", "Markdown-focused writing and publishing tools.", "#e05d7b", "MR"),
-        app("opensplit", "OpenSplit", "OpenSplit", "Split-screen and window workflow utility.", "#4fb6d8", "OS"),
-        app("purpleplanet", "PurplePlanet", "PurplePlanet", "Creative app from the ForPublic collection.", "#8c65df", "PP"),
-        app("stargaze", "StarGaze", "StarGaze", "Astronomy and sky-oriented utility.", "#6b7cff", "SG"),
-        app("venice-media-local", "Venice Media", "VeniceMediaLocal", "Local Venice media generator.", "#34c6a3", "VM"),
-        app("walletwitness", "WalletWitness", "WalletWitness", "Wallet and transaction inspection utility.", "#e3b342", "WW"),
+        app("batchlapse", "BatchLapse", "BatchLapse", "Batch tools for image and media workflows.", "#5b8def", "BL", "Work Stuff"),
+        app("depth-map-ai-generator", "DepthMap AI", "DepthMapAIGenerator", "Depth map generation utilities.", "#43b883", "DM", "Work Stuff"),
+        app("image-to-ascii-3d", "ASCII 3D", "ImageToASCII3D", "Image-to-ASCII 3D conversion.", "#f0a848", "A3", "Work Stuff"),
+        app("markrush", "MarkRush", "MarkRush", "Markdown-focused writing and publishing tools.", "#e05d7b", "MR", "Work Stuff"),
+        app("opensplit", "OpenSplit", "OpenSplit", "Split-screen and window workflow utility.", "#4fb6d8", "OS", "Work Stuff"),
+        app("venice-media-local", "Venice Media", "VeniceMediaLocal", "Local Venice media generator.", "#34c6a3", "VM", "Work Stuff"),
+        app("walletwitness", "WalletWitness", "WalletWitness", "Wallet and transaction inspection utility.", "#e3b342", "WW", "Work Stuff"),
+        app("purpleplanet", "PurplePlanet", "PurplePlanet", "Creative app from the ForPublic collection.", "#8c65df", "PP", "Fun Stuff"),
+        app("stargaze", "StarGaze", "StarGaze", "Astronomy and sky-oriented utility.", "#6b7cff", "SG", "Fun Stuff"),
     ]
 }
 
-fn app(id: &str, name: &str, repo: &str, description: &str, accent: &str, icon: &str) -> LauncherApp {
+fn app(id: &str, name: &str, repo: &str, description: &str, accent: &str, icon: &str, category: &str) -> LauncherApp {
     LauncherApp {
         id: id.to_string(),
         name: name.to_string(),
@@ -121,6 +127,7 @@ fn app(id: &str, name: &str, repo: &str, description: &str, accent: &str, icon: 
         description: description.to_string(),
         accent: accent.to_string(),
         icon: icon.to_string(),
+        category: category.to_string(),
         executable_path: None,
         installed_version: None,
         latest_version: None,
@@ -197,6 +204,9 @@ fn merge_default_apps(saved: Vec<LauncherApp>) -> Vec<LauncherApp> {
             app.release_checked_at = saved_app.release_checked_at;
             app.release_notes = saved_app.release_notes;
             app.visible = saved_app.visible;
+            if !saved_app.category.trim().is_empty() {
+                app.category = saved_app.category;
+            }
             merged.push(app);
         }
     }

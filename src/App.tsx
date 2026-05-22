@@ -22,6 +22,7 @@ type LauncherApp = {
   description: string
   accent: string
   icon: string
+  category: string
   executablePath: string | null
   installedVersion: string | null
   latestVersion: string | null
@@ -63,19 +64,19 @@ const fallbackState: ControlCenterState = {
   buildVersion: 'dev',
   dataDir: '',
   apps: [
-    app('batchlapse', 'BatchLapse', 'BatchLapse', 'Batch tools for image and media workflows.', '#5b8def', 'BL'),
-    app('depth-map-ai-generator', 'DepthMap AI', 'DepthMapAIGenerator', 'Depth map generation utilities.', '#43b883', 'DM'),
-    app('image-to-ascii-3d', 'ASCII 3D', 'ImageToASCII3D', 'Image-to-ASCII 3D conversion.', '#f0a848', 'A3'),
-    app('markrush', 'MarkRush', 'MarkRush', 'Markdown-focused writing and publishing tools.', '#e05d7b', 'MR'),
-    app('opensplit', 'OpenSplit', 'OpenSplit', 'Split-screen and window workflow utility.', '#4fb6d8', 'OS'),
-    app('purpleplanet', 'PurplePlanet', 'PurplePlanet', 'Creative app from the ForPublic collection.', '#8c65df', 'PP'),
-    app('stargaze', 'StarGaze', 'StarGaze', 'Astronomy and sky-oriented utility.', '#6b7cff', 'SG'),
-    app('venice-media-local', 'Venice Media', 'VeniceMediaLocal', 'Local Venice media generator.', '#34c6a3', 'VM'),
-    app('walletwitness', 'WalletWitness', 'WalletWitness', 'Wallet and transaction inspection utility.', '#e3b342', 'WW'),
+    app('batchlapse', 'BatchLapse', 'BatchLapse', 'Batch tools for image and media workflows.', '#5b8def', 'BL', 'Work Stuff'),
+    app('depth-map-ai-generator', 'DepthMap AI', 'DepthMapAIGenerator', 'Depth map generation utilities.', '#43b883', 'DM', 'Work Stuff'),
+    app('image-to-ascii-3d', 'ASCII 3D', 'ImageToASCII3D', 'Image-to-ASCII 3D conversion.', '#f0a848', 'A3', 'Work Stuff'),
+    app('markrush', 'MarkRush', 'MarkRush', 'Markdown-focused writing and publishing tools.', '#e05d7b', 'MR', 'Work Stuff'),
+    app('opensplit', 'OpenSplit', 'OpenSplit', 'Split-screen and window workflow utility.', '#4fb6d8', 'OS', 'Work Stuff'),
+    app('venice-media-local', 'Venice Media', 'VeniceMediaLocal', 'Local Venice media generator.', '#34c6a3', 'VM', 'Work Stuff'),
+    app('walletwitness', 'WalletWitness', 'WalletWitness', 'Wallet and transaction inspection utility.', '#e3b342', 'WW', 'Work Stuff'),
+    app('purpleplanet', 'PurplePlanet', 'PurplePlanet', 'Creative app from the ForPublic collection.', '#8c65df', 'PP', 'Fun Stuff'),
+    app('stargaze', 'StarGaze', 'StarGaze', 'Astronomy and sky-oriented utility.', '#6b7cff', 'SG', 'Fun Stuff'),
   ],
 }
 
-function app(id: string, name: string, repo: string, description: string, accent: string, icon: string): LauncherApp {
+function app(id: string, name: string, repo: string, description: string, accent: string, icon: string, category: string): LauncherApp {
   return {
     id,
     name,
@@ -83,6 +84,7 @@ function app(id: string, name: string, repo: string, description: string, accent
     description,
     accent,
     icon,
+    category,
     executablePath: null,
     installedVersion: null,
     latestVersion: null,
@@ -126,6 +128,31 @@ function fileName(path: string | null): string {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path
 }
 
+function categoryLabel(category: string): string {
+  const value = category.trim()
+  return value || 'Work Stuff'
+}
+
+type GridItem =
+  | { kind: 'category'; id: string; label: string }
+  | { kind: 'app'; app: LauncherApp }
+
+function gridItems(apps: LauncherApp[]): GridItem[] {
+  const items: GridItem[] = []
+  let lastCategory = ''
+
+  for (const appInfo of apps) {
+    const category = categoryLabel(appInfo.category)
+    if (category !== lastCategory) {
+      items.push({ kind: 'category', id: `category-${category}`, label: category })
+      lastCategory = category
+    }
+    items.push({ kind: 'app', app: appInfo })
+  }
+
+  return items
+}
+
 function moveApp(apps: LauncherApp[], fromId: string, toId: string): LauncherApp[] {
   if (fromId === toId) return apps
   const fromIndex = apps.findIndex((candidate) => candidate.id === fromId)
@@ -155,8 +182,7 @@ export default function App() {
   const configuredCount = visibleApps.filter((candidate) => candidate.executablePath).length
   const updateCount = visibleApps.filter((candidate) => versionStatus(candidate) === 'update').length
   const hiddenCount = state.apps.length - visibleApps.length
-  const gridColumns = visibleApps.length <= 2 ? visibleApps.length : visibleApps.length <= 4 ? 2 : 3
-  const gridRows = Math.max(1, Math.ceil(Math.max(1, visibleApps.length) / Math.max(1, gridColumns)))
+  const visibleGridItems = useMemo(() => gridItems(visibleApps), [visibleApps])
 
   useEffect(() => {
     void loadState()
@@ -397,9 +423,18 @@ export default function App() {
         <section
           className="app-grid"
           aria-label="App launcher"
-          style={{ '--grid-columns': Math.max(1, gridColumns), '--grid-rows': gridRows } as React.CSSProperties}
+          style={{ '--visible-count': visibleApps.length } as React.CSSProperties}
         >
-          {visibleApps.map((appInfo) => {
+          {visibleGridItems.map((item) => {
+            if (item.kind === 'category') {
+              return (
+                <div className="category-row" key={item.id}>
+                  <span>{`-= ${item.label} =-`}</span>
+                </div>
+              )
+            }
+
+            const appInfo = item.app
             const selected = appInfo.id === selectedApp?.id
             const status = versionStatus(appInfo)
             return (
