@@ -17,6 +17,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 type ThemeId = 'neko-tron' | 'pearl-white' | 'abyss-teal' | 'ember' | 'mosswood' | 'rose-noir'
+type PackagePreference = 'portable' | 'installer'
 
 type LauncherApp = {
   id: string
@@ -33,6 +34,9 @@ type LauncherApp = {
   releaseCheckedAt: string | null
   releaseNotes: string | null
   releaseOptions: ReleaseOption[]
+  packagePreference: PackagePreference
+  packagePath: string | null
+  demoUrl: string | null
   visible: boolean
 }
 
@@ -60,6 +64,15 @@ type DownloadResult = {
   installFolder: string
 }
 
+type ControlCenterUpdate = {
+  currentVersion: string
+  latestVersion: string | null
+  releaseUrl: string | null
+  releaseNotes: string | null
+  checkedAt: string
+  updateAvailable: boolean
+}
+
 type Theme = {
   id: ThemeId
   name: string
@@ -83,18 +96,18 @@ const fallbackState: ControlCenterState = {
   buildVersion: 'dev',
   dataDir: '',
   apps: [
-    app('batchlapse', 'BatchLapse', 'BatchLapse', 'Batch tools for image and media workflows.', '#5b8def', 'BL', 'Work Stuff'),
-    app('depth-map-ai-generator', 'DepthMap AI', 'DepthMapAIGenerator', 'Depth map generation utilities.', '#43b883', 'DM', 'Work Stuff'),
-    app('image-to-ascii-3d', 'ASCII 3D', 'ImageToASCII3D', 'Image-to-ASCII 3D conversion.', '#f0a848', 'A3', 'Work Stuff'),
-    app('markrush', 'MarkRush', 'MarkRush', 'Markdown-focused writing and publishing tools.', '#e05d7b', 'MR', 'Work Stuff'),
-    app('opensplit', 'OpenSplit', 'OpenSplit', 'Split-screen and window workflow utility.', '#4fb6d8', 'OS', 'Work Stuff'),
-    app('venice-media-local', 'Venice Media', 'VeniceMediaLocal', 'Local Venice media generator.', '#34c6a3', 'VM', 'Work Stuff'),
-    app('purpleplanet', 'PurplePlanet', 'PurplePlanet', 'Creative app from the ForPublic collection.', '#8c65df', 'PP', 'Fun Stuff'),
-    app('stargaze', 'StarGaze', 'StarGaze', 'Astronomy and sky-oriented utility.', '#6b7cff', 'SG', 'Fun Stuff'),
+    app('batchlapse', 'BatchLapse', 'BatchLapse', 'Batch video timelapse exporter for MP4, WebM, and GitHub-friendly GIFs.', '#5b8def', 'BL', 'Work Stuff'),
+    app('depth-map-ai-generator', 'DepthMap AI', 'DepthMapAIGenerator', 'Batch depth-map and WebP generator for local AI image workflows.', '#43b883', 'DM', 'Work Stuff'),
+    app('image-to-ascii-3d', 'ASCII 3D', 'ImageToASCII3D', 'Image-to-ASCII converter with optional depth-map driven 3D parallax exports.', '#f0a848', 'A3', 'Work Stuff'),
+    app('markrush', 'MarkRush', 'MarkRush', 'Fast local Markdown viewer/editor built for huge files and folders.', '#e05d7b', 'MR', 'Work Stuff'),
+    app('opensplit', 'OpenSplit', 'OpenSplit', 'Multi-pane terminal harness for AI coding agents, shells, and SSH sessions.', '#4fb6d8', 'OS', 'Work Stuff'),
+    app('venice-media-local', 'Venice Media', 'VeniceMediaLocal', 'Local Venice API media workspace for images, video, music, voice, and cleanup.', '#34c6a3', 'VM', 'Work Stuff'),
+    app('purpleplanet', 'PurplePlanet', 'PurplePlanet', 'Luminous Three.js planet motion art for live wallpapers and screensavers.', '#8c65df', 'PP', 'Fun Stuff', 'https://nekolegends.com/res/projects/purplePlanet/'),
+    app('stargaze', 'StarGaze', 'StarGaze', 'Glittering Three.js starfield wallpaper and screensaver with tunable motion.', '#6b7cff', 'SG', 'Fun Stuff', 'https://nekolegends.com/res/projects/starGaze/'),
   ],
 }
 
-function app(id: string, name: string, repo: string, description: string, accent: string, icon: string, category: string): LauncherApp {
+function app(id: string, name: string, repo: string, description: string, accent: string, icon: string, category: string, demoUrl: string | null = null): LauncherApp {
   return {
     id,
     name,
@@ -110,6 +123,9 @@ function app(id: string, name: string, repo: string, description: string, accent
     releaseCheckedAt: null,
     releaseNotes: null,
     releaseOptions: [],
+    packagePreference: 'portable',
+    packagePath: null,
+    demoUrl,
     visible: true,
   }
 }
@@ -136,17 +152,43 @@ function formatCheckedAt(value: string | null): string {
   return parsed.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
 }
 
+function versionNumberParts(version: string | null): number[] {
+  if (!version) return []
+  return Array.from(version.matchAll(/\d+/g), (match) => Number(match[0]))
+}
+
+function sameVersionNumbers(left: string | null, right: string | null): boolean {
+  const leftParts = versionNumberParts(left)
+  const rightParts = versionNumberParts(right)
+  if (leftParts.length === 0 || rightParts.length === 0 || leftParts.length !== rightParts.length) {
+    return false
+  }
+  return leftParts.every((part, index) => part === rightParts[index])
+}
+
 function versionStatus(appInfo: LauncherApp): 'ready' | 'update' | 'unknown' {
   if (!appInfo.latestVersion) return 'unknown'
   if (!appInfo.installedVersion) return 'ready'
-  return appInfo.installedVersion === appInfo.latestVersion ? 'ready' : 'update'
+  return sameVersionNumbers(appInfo.installedVersion, appInfo.latestVersion) ? 'ready' : 'update'
+}
+
+function appArtifactPath(appInfo: LauncherApp): string | null {
+  return appInfo.demoUrl ? appInfo.packagePath : appInfo.executablePath
+}
+
+function isAppDownloaded(appInfo: LauncherApp): boolean {
+  return Boolean(appArtifactPath(appInfo))
+}
+
+function hasKnownRelease(appInfo: LauncherApp): boolean {
+  return Boolean(appInfo.latestVersion || appInfo.releaseOptions.length > 0)
 }
 
 function installStatus(appInfo: LauncherApp): 'installed' | 'missing' {
-  return appInfo.executablePath ? 'installed' : 'missing'
+  return isAppDownloaded(appInfo) ? 'installed' : 'missing'
 }
 
-type AppDisplayStatus = 'missing' | 'installed' | 'update' | 'downloading' | 'failed'
+type AppDisplayStatus = 'coming-soon' | 'missing' | 'installed' | 'update' | 'downloading' | 'failed'
 
 function fileName(path: string | null): string {
   if (!path) return ''
@@ -198,6 +240,10 @@ function gridItems(apps: LauncherApp[], categories: string[]): GridItem[] {
 }
 
 function moveAppToApp(apps: LauncherApp[], fromId: string, target: LauncherApp): LauncherApp[] {
+  return moveAppToAppSlot(apps, fromId, target)
+}
+
+function moveAppToAppSlot(apps: LauncherApp[], fromId: string, target: LauncherApp): LauncherApp[] {
   const toId = target.id
   if (fromId === toId) return apps
   const fromIndex = apps.findIndex((candidate) => candidate.id === fromId)
@@ -206,9 +252,14 @@ function moveAppToApp(apps: LauncherApp[], fromId: string, target: LauncherApp):
 
   const nextApps = [...apps]
   const [moved] = nextApps.splice(fromIndex, 1)
-  const nextToIndex = nextApps.findIndex((candidate) => candidate.id === toId)
-  nextApps.splice(nextToIndex, 0, { ...moved, category: categoryLabel(target.category) })
+  const insertIndex = Math.min(toIndex, nextApps.length)
+  nextApps.splice(insertIndex, 0, { ...moved, category: categoryLabel(target.category) })
   return nextApps
+}
+
+function sameAppLayout(left: LauncherApp[], right: LauncherApp[]): boolean {
+  if (left.length !== right.length) return false
+  return left.every((appInfo, index) => appInfo.id === right[index]?.id && categoryLabel(appInfo.category) === categoryLabel(right[index]?.category ?? ''))
 }
 
 function moveAppToCategory(apps: LauncherApp[], appId: string, category: string): LauncherApp[] {
@@ -250,10 +301,64 @@ type PointerDrag = {
   pointerId: number
   startX: number
   startY: number
+  offsetX: number
+  offsetY: number
+  width: number
+  height: number
   active: boolean
 }
 
+type DragPointerEvent = {
+  pointerId: number
+  clientX: number
+  clientY: number
+  preventDefault: () => void
+  stopPropagation: () => void
+}
+
+type DragListeners = {
+  move: (event: PointerEvent) => void
+  up: (event: PointerEvent) => void
+  cancel: (event: PointerEvent) => void
+}
+
+type DragGhost = {
+  item: DragItem
+  x: number
+  y: number
+  width: number
+  height: number
+  icon: string
+  title: string
+  subtitle: string
+  accent: string
+}
+
+type AppLayoutSlot = {
+  appId: string
+  category: string
+  rect: DOMRect
+  centerX: number
+  centerY: number
+}
+
+type AppContextMenu = {
+  appId: string
+  x: number
+  y: number
+}
+
+type PendingAppPreview = {
+  appId: string
+  clientX: number
+  clientY: number
+  directX: number
+  directY: number
+}
+
 const dragDataType = 'application/x-neko-layout-item'
+const layoutAnimationDurationMs = 190
+const layoutAnimationMaxLockMs = 1000
 
 export default function App() {
   const [state, setState] = useState<ControlCenterState>(fallbackState)
@@ -262,13 +367,24 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string>('venice-media-local')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [draggedItem, setDraggedItem] = useState<DragItem | null>(null)
+  const [dragGhost, setDragGhost] = useState<DragGhost | null>(null)
   const [selectedReleaseTags, setSelectedReleaseTags] = useState<Record<string, string>>({})
   const [activeDownloads, setActiveDownloads] = useState<string[]>([])
   const [failedDownloads, setFailedDownloads] = useState<Record<string, boolean>>({})
+  const [contextMenu, setContextMenu] = useState<AppContextMenu | null>(null)
+  const [controlCenterUpdate, setControlCenterUpdate] = useState<ControlCenterUpdate | null>(null)
   const draggedItemRef = useRef<DragItem | null>(null)
   const pointerDragRef = useRef<PointerDrag | null>(null)
+  const dragListenersRef = useRef<DragListeners | null>(null)
   const suppressClickRef = useRef(false)
   const gridRef = useRef<HTMLElement | null>(null)
+  const appsRef = useRef<LauncherApp[]>(fallbackState.apps)
+  const categoriesRef = useRef<string[]>(defaultCategories)
+  const layoutTweenIdRef = useRef(0)
+  const layoutAnimationLockedRef = useRef(false)
+  const layoutAnimationRunIdRef = useRef(0)
+  const layoutAnimationTimerRef = useRef<number | null>(null)
+  const pendingAppPreviewRef = useRef<PendingAppPreview | null>(null)
 
   const visibleApps = useMemo(() => state.apps.filter((candidate) => candidate.visible), [state.apps])
   const selectedApp = useMemo(
@@ -276,12 +392,19 @@ export default function App() {
     [selectedId, state.apps, visibleApps],
   )
 
-  const configuredCount = visibleApps.filter((candidate) => candidate.executablePath).length
+  const configuredCount = visibleApps.filter((candidate) => isAppDownloaded(candidate)).length
   const updateCount = visibleApps.filter((candidate) => versionStatus(candidate) === 'update').length
-  const missingCount = visibleApps.filter((candidate) => !candidate.executablePath).length
+  const missingCount = visibleApps.filter((candidate) => hasKnownRelease(candidate) && !isAppDownloaded(candidate)).length
   const hiddenCount = state.apps.length - visibleApps.length
   const layoutCategories = useMemo(() => orderedCategories(state.apps, state.settings.categories), [state.apps, state.settings.categories])
   const visibleGridItems = useMemo(() => gridItems(visibleApps, layoutCategories), [layoutCategories, visibleApps])
+  const contextMenuApp = useMemo(
+    () => contextMenu ? state.apps.find((candidate) => candidate.id === contextMenu.appId) ?? null : null,
+    [contextMenu, state.apps],
+  )
+
+  appsRef.current = state.apps
+  categoriesRef.current = layoutCategories
 
   function selectedVersionFor(appInfo: LauncherApp): string | null {
     return selectedReleaseTags[appInfo.id] ?? appInfo.latestVersion ?? appInfo.releaseOptions[0]?.tagName ?? null
@@ -290,7 +413,7 @@ export default function App() {
   function displayStatus(appInfo: LauncherApp): AppDisplayStatus {
     if (activeDownloads.includes(appInfo.id)) return 'downloading'
     if (failedDownloads[appInfo.id]) return 'failed'
-    if (!appInfo.executablePath) return 'missing'
+    if (!isAppDownloaded(appInfo)) return hasKnownRelease(appInfo) ? 'missing' : 'coming-soon'
     if (versionStatus(appInfo) === 'update') return 'update'
     return 'installed'
   }
@@ -300,12 +423,35 @@ export default function App() {
     if (status === 'failed') return 'Failed'
     if (status === 'update') return 'Update Ready'
     if (status === 'installed') return 'Installed'
+    if (status === 'coming-soon') return 'Coming Soon'
     return 'Missing'
   }
 
   useEffect(() => {
     void loadState()
+    void checkControlCenterUpdate(false)
   }, [])
+
+  useEffect(() => {
+    if (!contextMenu) return
+
+    function closeMenu() {
+      setContextMenu(null)
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        closeMenu()
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    window.addEventListener('resize', closeMenu)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('resize', closeMenu)
+    }
+  }, [contextMenu])
 
   async function loadState() {
     if (!isTauriRuntime()) {
@@ -326,11 +472,12 @@ export default function App() {
 
   async function scanForUpdates() {
     setBusy(true)
-    setNotice('Scanning GitHub releases...')
+    setNotice('Scanning GitHub releases and Control Center...')
     try {
       const apps = await call<LauncherApp[]>('scan_releases')
+      const update = await checkControlCenterUpdate(false)
       setState((current) => ({ ...current, apps }))
-      setNotice('Release scan complete')
+      setNotice(update?.updateAvailable ? 'Release scan complete - Control Center update available' : 'Release scan complete')
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error))
     } finally {
@@ -338,14 +485,74 @@ export default function App() {
     }
   }
 
+  async function checkControlCenterUpdate(showNotice: boolean): Promise<ControlCenterUpdate | null> {
+    if (!isTauriRuntime()) return null
+    if (showNotice) setNotice('Checking Control Center release...')
+    try {
+      const update = await call<ControlCenterUpdate>('check_control_center_update')
+      setControlCenterUpdate(update)
+      if (showNotice) {
+        setNotice(update.updateAvailable ? `Control Center ${update.latestVersion} is available` : 'Control Center is up to date')
+      }
+      return update
+    } catch (error) {
+      if (showNotice) {
+        setNotice(error instanceof Error ? error.message : String(error))
+      }
+      return null
+    }
+  }
+
+  async function openControlCenterUpdate() {
+    if (!controlCenterUpdate) return
+    try {
+      await call<void>('open_control_center_release', { update: controlCenterUpdate })
+      setNotice(`Opening Control Center ${controlCenterUpdate.latestVersion ?? 'release'}`)
+    } catch (error) {
+      window.open(controlCenterUpdate.releaseUrl ?? 'https://github.com/neko-legends/NekoLegendsControlCenter/releases', '_blank', 'noopener')
+      setNotice(error instanceof Error ? error.message : String(error))
+    }
+  }
+
   async function launchSelected() {
     if (!selectedApp) return
+    if (selectedApp.demoUrl) {
+      await viewDemo(selectedApp)
+      return
+    }
+    await launchApp(selectedApp)
+  }
+
+  async function launchApp(appInfo: LauncherApp) {
     setBusy(true)
-    setNotice(`Launching ${selectedApp.name}...`)
+    setNotice(`Launching ${appInfo.name}...`)
     try {
-      await call<void>('launch_app', { request: { appId: selectedApp.id } })
-      setNotice(`${selectedApp.name} launched`)
+      await call<void>('launch_app', { request: { appId: appInfo.id } })
+      setNotice(`${appInfo.name} launched`)
     } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function viewDemo(appInfo: LauncherApp) {
+    if (!appInfo.demoUrl) {
+      setNotice(`${appInfo.name} does not have a hosted demo`)
+      return
+    }
+
+    setBusy(true)
+    setNotice(`Opening ${appInfo.name} demo...`)
+    try {
+      if (isTauriRuntime()) {
+        await call<void>('open_demo_url', { request: { appId: appInfo.id } })
+      } else {
+        window.open(appInfo.demoUrl, '_blank', 'noopener')
+      }
+      setNotice(`${appInfo.name} demo opened`)
+    } catch (error) {
+      window.open(appInfo.demoUrl, '_blank', 'noopener')
       setNotice(error instanceof Error ? error.message : String(error))
     } finally {
       setBusy(false)
@@ -354,7 +561,7 @@ export default function App() {
 
   async function chooseExecutable(appInfo: LauncherApp) {
     if (!isTauriRuntime()) {
-      setNotice('Executable selection is available in the desktop runtime.')
+      setNotice('Launch file selection is available in the desktop runtime.')
       return
     }
 
@@ -371,7 +578,11 @@ export default function App() {
       multiple: false,
       directory: false,
       defaultPath,
-      filters: [{ name: 'Windows executable', extensions: ['exe'] }],
+      filters: [
+        { name: 'Launch files', extensions: ['exe', 'html', 'htm'] },
+        { name: 'Windows executable', extensions: ['exe'] },
+        { name: 'Web wallpaper', extensions: ['html', 'htm'] },
+      ],
     })
     if (typeof selected !== 'string') return
 
@@ -380,7 +591,7 @@ export default function App() {
         request: { appId: appInfo.id, executablePath: selected },
       })
       setState((current) => ({ ...current, apps }))
-      setNotice(`${appInfo.name} executable saved`)
+      setNotice(`${appInfo.name} launch file saved`)
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error))
     }
@@ -409,7 +620,9 @@ export default function App() {
     })
     setNotice(`Downloading ${appInfo.name}...`)
     try {
-      const result = await call<DownloadResult>('download_release', { request: { appId: appInfo.id, version } })
+      const result = await call<DownloadResult>('download_release', {
+        request: { appId: appInfo.id, version, packagePreference: appInfo.packagePreference },
+      })
       setState((current) => ({ ...current, apps: result.apps }))
       setNotice(`${appInfo.name} downloaded to ${fileName(result.installFolder) || fileName(result.filePath)}`)
       return true
@@ -424,7 +637,7 @@ export default function App() {
   }
 
   async function downloadAllMissing() {
-    const targets = visibleApps.filter((appInfo) => !appInfo.executablePath)
+    const targets = visibleApps.filter((appInfo) => hasKnownRelease(appInfo) && !isAppDownloaded(appInfo))
     if (targets.length === 0) return
     setBusy(true)
     let successCount = 0
@@ -458,6 +671,22 @@ export default function App() {
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error))
     }
+  }
+
+  function openAppContextMenu(event: React.MouseEvent<HTMLElement>, appInfo: LauncherApp) {
+    event.preventDefault()
+    event.stopPropagation()
+    clearDrag()
+    setSelectedId(appInfo.id)
+    setContextMenu({
+      appId: appInfo.id,
+      x: Math.min(event.clientX, Math.max(12, window.innerWidth - 190)),
+      y: Math.min(event.clientY, Math.max(12, window.innerHeight - 150)),
+    })
+  }
+
+  function closeContextMenu() {
+    setContextMenu(null)
   }
 
   async function setTheme(theme: ThemeId) {
@@ -502,6 +731,11 @@ export default function App() {
     }
   }
 
+  function setPackagePreference(appId: string, packagePreference: PackagePreference) {
+    const apps = state.apps.map((candidate) => candidate.id === appId ? { ...candidate, packagePreference } : candidate)
+    void persistLayout(apps, packagePreference === 'portable' ? 'Portable downloads selected' : 'Installer downloads selected')
+  }
+
   function getDragItem(event: React.DragEvent): DragItem | null {
     if (draggedItemRef.current) return draggedItemRef.current
     const rawItem = event.dataTransfer.getData(dragDataType)
@@ -518,9 +752,183 @@ export default function App() {
   }
 
   function clearDrag() {
+    clearLayoutAnimationQueue()
+    if (dragListenersRef.current) {
+      window.removeEventListener('pointermove', dragListenersRef.current.move)
+      window.removeEventListener('pointerup', dragListenersRef.current.up)
+      window.removeEventListener('pointercancel', dragListenersRef.current.cancel)
+      dragListenersRef.current = null
+    }
     pointerDragRef.current = null
     draggedItemRef.current = null
     setDraggedItem(null)
+    setDragGhost(null)
+  }
+
+  function dragPosition(pointerDrag: PointerDrag, clientX: number, clientY: number): { x: number; y: number } {
+    return {
+      x: clientX - pointerDrag.offsetX,
+      y: clientY - pointerDrag.offsetY,
+    }
+  }
+
+  function dragCenter(pointerDrag: PointerDrag, clientX: number, clientY: number): { x: number; y: number } {
+    const position = dragPosition(pointerDrag, clientX, clientY)
+    return {
+      x: position.x + pointerDrag.width / 2,
+      y: position.y + pointerDrag.height / 2,
+    }
+  }
+
+  function dragGhostForItem(item: DragItem, x: number, y: number, width: number, height: number): DragGhost | null {
+    if (item.kind === 'category') {
+      return { item, x, y, width, height, icon: '', title: item.label, subtitle: 'Category', accent: '#ff6a00' }
+    }
+
+    const appInfo = appsRef.current.find((candidate) => candidate.id === item.id)
+    if (!appInfo) return null
+    return {
+      item,
+      x,
+      y,
+      width,
+      height,
+      icon: appInfo.icon,
+      title: appInfo.name,
+      subtitle: displayStatusLabel(displayStatus(appInfo)),
+      accent: appInfo.accent,
+    }
+  }
+
+  function setLocalLayout(apps: LauncherApp[], categories = categoriesRef.current) {
+    appsRef.current = apps
+    categoriesRef.current = normalizeCategories(categories)
+    setState((current) => ({
+      ...current,
+      apps,
+      settings: { ...current.settings, categories: categoriesRef.current },
+    }))
+  }
+
+  function gridAnimationItems(): HTMLElement[] {
+    return Array.from(gridRef.current?.querySelectorAll<HTMLElement>('[data-layout-id]') ?? [])
+  }
+
+  function gridAnimationRects(items = gridAnimationItems()): Map<string, DOMRect> {
+    const rects = new Map<string, DOMRect>()
+    for (const item of items) {
+      const id = item.dataset.layoutId
+      if (id) {
+        rects.set(id, item.getBoundingClientRect())
+      }
+    }
+    return rects
+  }
+
+  function cancelGridAnimations(items = gridAnimationItems()) {
+    for (const item of items) {
+      for (const animation of item.getAnimations()) {
+        animation.cancel()
+      }
+    }
+  }
+
+  function clearLayoutAnimationTimer() {
+    if (layoutAnimationTimerRef.current !== null) {
+      window.clearTimeout(layoutAnimationTimerRef.current)
+      layoutAnimationTimerRef.current = null
+    }
+  }
+
+  function clearLayoutAnimationQueue() {
+    layoutAnimationRunIdRef.current += 1
+    layoutAnimationLockedRef.current = false
+    pendingAppPreviewRef.current = null
+    clearLayoutAnimationTimer()
+  }
+
+  function finishLayoutAnimation(runId: number) {
+    if (layoutAnimationRunIdRef.current !== runId || !layoutAnimationLockedRef.current) return
+
+    layoutAnimationLockedRef.current = false
+    clearLayoutAnimationTimer()
+
+    const pendingPreview = pendingAppPreviewRef.current
+    pendingAppPreviewRef.current = null
+
+    if (
+      pendingPreview
+      && draggedItemRef.current?.kind === 'app'
+      && draggedItemRef.current.id === pendingPreview.appId
+    ) {
+      previewAppSort(
+        pendingPreview.appId,
+        pendingPreview.clientX,
+        pendingPreview.clientY,
+        pendingPreview.directX,
+        pendingPreview.directY,
+      )
+    }
+  }
+
+  function animateGridLayout(applyLayout: () => void, onComplete?: () => void) {
+    const tweenId = layoutTweenIdRef.current + 1
+    layoutTweenIdRef.current = tweenId
+    const currentItems = gridAnimationItems()
+    const before = gridAnimationRects(currentItems)
+    cancelGridAnimations(currentItems)
+    applyLayout()
+
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        if (layoutTweenIdRef.current !== tweenId) return
+
+        const items = gridAnimationItems()
+        const animations: Animation[] = []
+        for (const item of items) {
+          if (item.dataset.placeholderAppId) continue
+
+          const id = item.dataset.layoutId
+          const previous = id ? before.get(id) : null
+          if (!previous) continue
+
+          const next = item.getBoundingClientRect()
+          const deltaX = previous.left - next.left
+          const deltaY = previous.top - next.top
+          if (Math.abs(deltaX) < 1 && Math.abs(deltaY) < 1) continue
+
+          animations.push(
+            item.animate(
+              [
+                { transform: `translate(${deltaX}px, ${deltaY}px)` },
+                { transform: 'translate(0, 0)' },
+              ],
+              {
+                duration: layoutAnimationDurationMs,
+                easing: 'cubic-bezier(0.2, 0, 0, 1)',
+                fill: 'none',
+              },
+            ),
+          )
+        }
+
+        if (animations.length === 0) {
+          onComplete?.()
+          return
+        }
+
+        void Promise.allSettled(animations.map((animation) => animation.finished)).then(() => onComplete?.())
+      })
+    })
+  }
+
+  function startLayoutPreviewAnimation(apps: LauncherApp[]) {
+    const runId = layoutAnimationRunIdRef.current + 1
+    layoutAnimationRunIdRef.current = runId
+    layoutAnimationLockedRef.current = true
+    clearLayoutAnimationTimer()
+    layoutAnimationTimerRef.current = window.setTimeout(() => finishLayoutAnimation(runId), layoutAnimationMaxLockMs)
+    animateGridLayout(() => setLocalLayout(apps), () => finishLayoutAnimation(runId))
   }
 
   function categoryFromY(clientY: number): string {
@@ -536,6 +944,93 @@ export default function App() {
 
   function categoryFromDropPosition(event: React.DragEvent<HTMLElement>): string {
     return categoryFromY(event.clientY)
+  }
+
+  function appSlots(): AppLayoutSlot[] {
+    const items = Array.from(
+      gridRef.current?.querySelectorAll<HTMLElement>('.app-tile[data-app-id], .app-placeholder[data-placeholder-app-id]') ?? [],
+    )
+
+    return items.map((item) => {
+      const rect = item.getBoundingClientRect()
+      return {
+        appId: item.dataset.appId ?? item.dataset.placeholderAppId ?? '',
+        category: categoryLabel(item.dataset.category ?? ''),
+        rect,
+        centerX: rect.left + rect.width / 2,
+        centerY: rect.top + rect.height / 2,
+      }
+    }).filter((slot) => slot.appId && slot.category)
+  }
+
+  function categoryAtPoint(clientX: number, clientY: number): string | null {
+    const row = Array.from(gridRef.current?.querySelectorAll<HTMLElement>('.category-row[data-category]') ?? []).find((candidate) => {
+      const rect = candidate.getBoundingClientRect()
+      return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom
+    })
+    return row?.dataset.category ? categoryLabel(row.dataset.category) : null
+  }
+
+  function nearestAppSlot(clientX: number, clientY: number, directX = clientX, directY = clientY): AppLayoutSlot | null {
+    const slots = appSlots()
+    if (slots.length === 0) return null
+
+    const directSlot = slots.find((slot) => {
+      const { rect } = slot
+      return directX >= rect.left && directX <= rect.right && directY >= rect.top && directY <= rect.bottom
+    })
+    if (directSlot) return directSlot
+
+    const activeCategory = categoryFromY(clientY)
+    const categorySlots = slots.filter((slot) => slot.category === activeCategory)
+    const candidates = categorySlots.length > 0 ? categorySlots : slots
+
+    return candidates.reduce<AppLayoutSlot | null>((nearest, slot) => {
+      const dx = clientX - slot.centerX
+      const dy = clientY - slot.centerY
+      const distance = dx * dx + dy * dy * 1.35
+      if (!nearest) return slot
+
+      const nearestDx = clientX - nearest.centerX
+      const nearestDy = clientY - nearest.centerY
+      const nearestDistance = nearestDx * nearestDx + nearestDy * nearestDy * 1.35
+      return distance < nearestDistance ? slot : nearest
+    }, null)
+  }
+
+  function appLayoutForPointer(appId: string, clientX: number, clientY: number, directX = clientX, directY = clientY): LauncherApp[] {
+    const categoryTarget = categoryAtPoint(directX, directY)
+    if (categoryTarget) {
+      return moveAppToCategory(appsRef.current, appId, categoryTarget)
+    }
+
+    const slotTarget = nearestAppSlot(clientX, clientY, directX, directY)
+    if (slotTarget?.appId === appId) return appsRef.current
+
+    const currentApps = appsRef.current
+
+    if (slotTarget?.appId) {
+      const targetApp = currentApps.find((candidate) => candidate.id === slotTarget.appId)
+      if (targetApp) {
+        return moveAppToAppSlot(currentApps, appId, targetApp)
+      }
+    }
+
+    return moveAppToCategory(currentApps, appId, categoryFromY(clientY))
+  }
+
+  function previewAppSort(appId: string, clientX: number, clientY: number, directX = clientX, directY = clientY) {
+    if (layoutAnimationLockedRef.current) {
+      pendingAppPreviewRef.current = { appId, clientX, clientY, directX, directY }
+      return
+    }
+
+    const currentApps = appsRef.current
+    const apps = appLayoutForPointer(appId, clientX, clientY, directX, directY)
+
+    if (!sameAppLayout(currentApps, apps)) {
+      startLayoutPreviewAnimation(apps)
+    }
   }
 
   function applyDropItemToApp(item: DragItem, target: LauncherApp) {
@@ -593,17 +1088,34 @@ export default function App() {
 
   function startPointerDrag(event: React.PointerEvent<HTMLElement>, item: DragItem) {
     if (event.button !== 0) return
+    clearDrag()
+    const rect = event.currentTarget.getBoundingClientRect()
     pointerDragRef.current = {
       item,
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top,
+      width: rect.width,
+      height: rect.height,
       active: false,
     }
-    event.currentTarget.setPointerCapture?.(event.pointerId)
+    dragListenersRef.current = {
+      move: (nextEvent) => movePointerDrag(nextEvent),
+      up: (nextEvent) => endPointerDrag(nextEvent),
+      cancel: (nextEvent) => {
+        if (pointerDragRef.current?.pointerId === nextEvent.pointerId) {
+          clearDrag()
+        }
+      },
+    }
+    window.addEventListener('pointermove', dragListenersRef.current.move)
+    window.addEventListener('pointerup', dragListenersRef.current.up)
+    window.addEventListener('pointercancel', dragListenersRef.current.cancel)
   }
 
-  function movePointerDrag(event: React.PointerEvent<HTMLElement>) {
+  function movePointerDrag(event: DragPointerEvent) {
     const pointerDrag = pointerDragRef.current
     if (!pointerDrag || pointerDrag.pointerId !== event.pointerId) return
     const distance = Math.hypot(event.clientX - pointerDrag.startX, event.clientY - pointerDrag.startY)
@@ -611,19 +1123,32 @@ export default function App() {
       pointerDrag.active = true
       draggedItemRef.current = pointerDrag.item
       setDraggedItem(pointerDrag.item)
+      const position = dragPosition(pointerDrag, event.clientX, event.clientY)
+      setDragGhost(dragGhostForItem(pointerDrag.item, position.x, position.y, pointerDrag.width, pointerDrag.height))
     }
     if (pointerDrag.active) {
       event.preventDefault()
+      const position = dragPosition(pointerDrag, event.clientX, event.clientY)
+      setDragGhost((current) => (
+        current
+          ? { ...current, x: position.x, y: position.y }
+          : dragGhostForItem(pointerDrag.item, position.x, position.y, pointerDrag.width, pointerDrag.height)
+      ))
+      if (pointerDrag.item.kind === 'app') {
+        const center = dragCenter(pointerDrag, event.clientX, event.clientY)
+        previewAppSort(pointerDrag.item.id, center.x, center.y, event.clientX, event.clientY)
+      }
     }
   }
 
-  function endPointerDrag(event: React.PointerEvent<HTMLElement>) {
+  function endPointerDrag(event: DragPointerEvent) {
     const pointerDrag = pointerDragRef.current
     if (!pointerDrag || pointerDrag.pointerId !== event.pointerId) return
-    pointerDragRef.current = null
-    event.currentTarget.releasePointerCapture?.(event.pointerId)
 
-    if (!pointerDrag.active) return
+    if (!pointerDrag.active) {
+      clearDrag()
+      return
+    }
 
     event.preventDefault()
     event.stopPropagation()
@@ -632,6 +1157,17 @@ export default function App() {
       suppressClickRef.current = false
     }, 0)
 
+    if (pointerDrag.item.kind === 'app') {
+      const center = dragCenter(pointerDrag, event.clientX, event.clientY)
+      const finalApps = appLayoutForPointer(pointerDrag.item.id, center.x, center.y, event.clientX, event.clientY)
+      if (!sameAppLayout(appsRef.current, finalApps)) {
+        setLocalLayout(finalApps)
+      }
+      clearDrag()
+      void persistLayout(appsRef.current, 'Layout saved', categoriesRef.current)
+      return
+    }
+
     const dropTarget = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null
     const appTarget = dropTarget?.closest<HTMLElement>('.app-tile[data-app-id]')
     const categoryTarget = dropTarget?.closest<HTMLElement>('[data-category]')
@@ -639,7 +1175,7 @@ export default function App() {
     const targetCategory = categoryTarget?.dataset.category ?? categoryFromY(event.clientY)
 
     clearDrag()
-    if (targetApp && !(pointerDrag.item.kind === 'app' && pointerDrag.item.id === targetApp.id)) {
+    if (targetApp) {
       applyDropItemToApp(pointerDrag.item, targetApp)
       return
     }
@@ -716,13 +1252,30 @@ export default function App() {
   }
 
   return (
-    <div className={classNames('app-shell', `theme-${state.settings.theme}`, state.settings.compactLabels && 'compact-labels', draggedItem && 'dragging-layout')}>
+    <div
+      className={classNames('app-shell', `theme-${state.settings.theme}`, state.settings.compactLabels && 'compact-labels', draggedItem && 'dragging-layout')}
+      onClick={closeContextMenu}
+    >
       <header className="topbar">
         <div className="brand-lockup">
           <div>
             <h1>Neko Legends Control Center</h1>
             <p>{configuredCount}/{visibleApps.length} apps wired · {updateCount} updates{hiddenCount > 0 ? ` · ${hiddenCount} hidden` : ''}</p>
           </div>
+        </div>
+        <div className="control-update-slot">
+          {controlCenterUpdate?.updateAvailable && (
+            <button
+              className="control-update-button"
+              type="button"
+              onClick={() => void openControlCenterUpdate()}
+              title={`Update available: Control Center ${controlCenterUpdate.latestVersion ?? ''}. Open the latest release.`}
+            >
+              <Download size={16} />
+              Update Control Center
+              <span>{controlCenterUpdate.latestVersion}</span>
+            </button>
+          )}
         </div>
         <div className="topbar-actions">
           <button className="icon-button" type="button" onClick={() => setSettingsOpen((open) => !open)} title="Theme settings">
@@ -780,9 +1333,6 @@ export default function App() {
                   className="category-chip"
                   key={category}
                   onPointerDown={(event) => startPointerDrag(event, { kind: 'category', label: category })}
-                  onPointerMove={movePointerDrag}
-                  onPointerUp={endPointerDrag}
-                  onPointerCancel={clearDrag}
                   onDragOver={(event) => {
                     event.preventDefault()
                     event.dataTransfer.dropEffect = 'move'
@@ -848,9 +1398,6 @@ export default function App() {
                   key={item.id}
                   data-category={item.label}
                   onPointerDown={(event) => startPointerDrag(event, { kind: 'category', label: item.label })}
-                  onPointerMove={movePointerDrag}
-                  onPointerUp={endPointerDrag}
-                  onPointerCancel={clearDrag}
                   onDragOver={(event) => {
                     event.preventDefault()
                     event.dataTransfer.dropEffect = 'move'
@@ -872,6 +1419,21 @@ export default function App() {
             const selected = appInfo.id === selectedApp?.id
             const status = versionStatus(appInfo)
             const tileStatus = displayStatus(appInfo)
+            const isDraggedApp = draggedItem?.kind === 'app' && draggedItem.id === appInfo.id
+
+            if (isDraggedApp) {
+              return (
+                <div
+                  className="app-placeholder"
+                  key={appInfo.id}
+                  data-category={categoryLabel(appInfo.category)}
+                  data-placeholder-app-id={appInfo.id}
+                  data-layout-id={appInfo.id}
+                  aria-hidden="true"
+                />
+              )
+            }
+
             return (
               <button
                 key={appInfo.id}
@@ -880,10 +1442,8 @@ export default function App() {
                 style={{ '--app-accent': appInfo.accent } as React.CSSProperties}
                 data-category={categoryLabel(appInfo.category)}
                 data-app-id={appInfo.id}
+                data-layout-id={appInfo.id}
                 onPointerDown={(event) => startPointerDrag(event, { kind: 'app', id: appInfo.id })}
-                onPointerMove={movePointerDrag}
-                onPointerUp={endPointerDrag}
-                onPointerCancel={clearDrag}
                 onDragOver={(event) => {
                   event.preventDefault()
                   event.dataTransfer.dropEffect = 'move'
@@ -894,6 +1454,7 @@ export default function App() {
                   event.stopPropagation()
                   handleDropOnApp(event, appInfo)
                 }}
+                onContextMenu={(event) => openAppContextMenu(event, appInfo)}
                 onClick={(event) => {
                   if (suppressClickRef.current) {
                     event.preventDefault()
@@ -906,7 +1467,11 @@ export default function App() {
                     event.preventDefault()
                     return
                   }
-                  appInfo.executablePath ? void launchSelected() : void chooseExecutable(appInfo)
+                  appInfo.demoUrl
+                    ? void viewDemo(appInfo)
+                    : appInfo.executablePath
+                      ? void launchApp(appInfo)
+                      : void chooseExecutable(appInfo)
                 }}
               >
                 <span className="app-icon">{appInfo.icon}</span>
@@ -952,8 +1517,8 @@ export default function App() {
                 <strong>{formatCheckedAt(selectedApp.releaseCheckedAt)}</strong>
               </div>
               <div>
-                <span>Executable</span>
-                <strong>{selectedApp.executablePath ? fileName(selectedApp.executablePath) : 'Not set'}</strong>
+                <span>{selectedApp.demoUrl ? 'Package' : 'Launch file'}</span>
+                <strong>{appArtifactPath(selectedApp) ? fileName(appArtifactPath(selectedApp) ?? '') : 'Not set'}</strong>
               </div>
             </div>
 
@@ -973,15 +1538,46 @@ export default function App() {
               </select>
             </label>
 
+            <div className="package-picker" aria-label="Download type">
+              <span>Download type</span>
+              <div className="segmented-control">
+                <button
+                  className={classNames(selectedApp.packagePreference === 'portable' && 'active')}
+                  type="button"
+                  onClick={() => setPackagePreference(selectedApp.id, 'portable')}
+                  title="Prefer portable or standalone downloads that can launch directly"
+                >
+                  Portable
+                </button>
+                <button
+                  className={classNames(selectedApp.packagePreference === 'installer' && 'active')}
+                  type="button"
+                  onClick={() => setPackagePreference(selectedApp.id, 'installer')}
+                  title="Prefer setup or MSI installer downloads"
+                >
+                  Installer
+                </button>
+              </div>
+            </div>
+
             <div className="detail-actions">
-              <button className="primary-action" type="button" onClick={launchSelected} disabled={busy || !selectedApp.executablePath}>
-                <Play size={17} />
-                Launch
-              </button>
-              <button className="secondary-action" type="button" onClick={() => void chooseExecutable(selectedApp)}>
-                <FolderOpen size={17} />
-                Path
-              </button>
+              {selectedApp.demoUrl ? (
+                <button className="primary-action" type="button" onClick={() => void viewDemo(selectedApp)} disabled={busy}>
+                  <ExternalLink size={17} />
+                  View Demo
+                </button>
+              ) : (
+                <button className="primary-action" type="button" onClick={launchSelected} disabled={busy || !selectedApp.executablePath}>
+                  <Play size={17} />
+                  Launch
+                </button>
+              )}
+              {!selectedApp.demoUrl && (
+                <button className="secondary-action" type="button" onClick={() => void chooseExecutable(selectedApp)}>
+                  <FolderOpen size={17} />
+                  Path
+                </button>
+              )}
               <button className="secondary-action" type="button" onClick={() => void openInstallFolder(selectedApp)}>
                 <FolderOpen size={17} />
                 Folder
@@ -1008,6 +1604,88 @@ export default function App() {
         <span>{notice}</span>
         <span>v{state.buildVersion}</span>
       </footer>
+
+      {contextMenu && contextMenuApp && (
+        <div
+          className="app-context-menu"
+          style={{ left: contextMenu.x, top: contextMenu.y } as React.CSSProperties}
+          onClick={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <div className="context-menu-title">{contextMenuApp.name}</div>
+          {contextMenuApp.demoUrl && (
+            <button
+              type="button"
+              onClick={() => {
+                closeContextMenu()
+                void viewDemo(contextMenuApp)
+              }}
+              disabled={busy}
+            >
+              <ExternalLink size={15} />
+              View Demo
+            </button>
+          )}
+          {!contextMenuApp.demoUrl && contextMenuApp.executablePath && (
+            <button
+              type="button"
+              onClick={() => {
+                closeContextMenu()
+                void launchApp(contextMenuApp)
+              }}
+              disabled={busy}
+            >
+              <Play size={15} />
+              Launch
+            </button>
+          )}
+          {!isAppDownloaded(contextMenuApp) && (
+            <button
+              type="button"
+              onClick={() => {
+                closeContextMenu()
+                void downloadRelease(contextMenuApp, selectedVersionFor(contextMenuApp), true)
+              }}
+              disabled={busy}
+            >
+              <Download size={15} />
+              Download
+            </button>
+          )}
+          {isAppDownloaded(contextMenuApp) && versionStatus(contextMenuApp) === 'update' && (
+            <button
+              type="button"
+              onClick={() => {
+                closeContextMenu()
+                void downloadRelease(contextMenuApp, contextMenuApp.latestVersion ?? null, true)
+              }}
+              disabled={busy}
+            >
+              <RefreshCw size={15} />
+              Update
+            </button>
+          )}
+        </div>
+      )}
+
+      {dragGhost && (
+        <div
+          className={classNames('drag-ghost', dragGhost.item.kind === 'category' && 'category-ghost')}
+          style={{
+            '--app-accent': dragGhost.accent,
+            left: dragGhost.x,
+            top: dragGhost.y,
+            width: dragGhost.width,
+            minHeight: dragGhost.height,
+          } as React.CSSProperties}
+        >
+          {dragGhost.icon && <span className="app-icon">{dragGhost.icon}</span>}
+          <span className="app-copy">
+            <strong>{dragGhost.title}</strong>
+            <small>{dragGhost.subtitle}</small>
+          </span>
+        </div>
+      )}
     </div>
   )
 }

@@ -2001,7 +2001,7 @@ dependencies = [
 
 [[package]]
 name = "neko-legends-control-center"
-version = "26.5.21"
+version = "26.6.5"
 dependencies = [
  "chrono",
  "open",
@@ -2012,6 +2012,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tokio",
+ "winreg",
  "zip",
 ]
 

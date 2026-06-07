@@ -9,12 +9,17 @@ use std::{
     process::Command,
 };
 use tauri::{AppHandle, Manager, PhysicalSize, Size, WebviewWindow, WindowEvent};
+#[cfg(windows)]
+use winreg::{enums::*, RegKey};
 
 const MIN_WINDOW_WIDTH: u32 = 520;
 const MIN_WINDOW_HEIGHT: u32 = 390;
 const FALLBACK_WINDOW_WIDTH: u32 = 720;
 const FALLBACK_WINDOW_HEIGHT: u32 = 520;
 const GITHUB_OWNER: &str = "neko-legends";
+const CONTROL_CENTER_REPO: &str = "NekoLegendsControlCenter";
+const VENICE_MEDIA_LOCAL_ID: &str = "venice-media-local";
+const VENICE_MEDIA_LOCAL_DISPLAY_NAME: &str = "Venice Media Local";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,8 +40,25 @@ struct LauncherApp {
     release_notes: Option<String>,
     #[serde(default)]
     release_options: Vec<ReleaseOption>,
+    #[serde(default)]
+    package_preference: PackagePreference,
+    package_path: Option<String>,
+    demo_url: Option<String>,
     #[serde(default = "default_true")]
     visible: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum PackagePreference {
+    Portable,
+    Installer,
+}
+
+impl Default for PackagePreference {
+    fn default() -> Self {
+        Self::Portable
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,6 +133,7 @@ struct LaunchRequest {
 struct DownloadRequest {
     app_id: String,
     version: Option<String>,
+    package_preference: Option<PackagePreference>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -133,6 +156,17 @@ struct DownloadResult {
     apps: Vec<LauncherApp>,
     file_path: String,
     install_folder: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ControlCenterUpdate {
+    current_version: String,
+    latest_version: Option<String>,
+    release_url: Option<String>,
+    release_notes: Option<String>,
+    checked_at: String,
+    update_available: bool,
 }
 
 fn default_true() -> bool {
@@ -164,18 +198,18 @@ fn normalize_categories(categories: Vec<String>) -> Vec<String> {
 
 fn default_apps() -> Vec<LauncherApp> {
     vec![
-        app("batchlapse", "BatchLapse", "BatchLapse", "Batch tools for image and media workflows.", "#5b8def", "BL", "Work Stuff"),
-        app("depth-map-ai-generator", "DepthMap AI", "DepthMapAIGenerator", "Depth map generation utilities.", "#43b883", "DM", "Work Stuff"),
-        app("image-to-ascii-3d", "ASCII 3D", "ImageToASCII3D", "Image-to-ASCII 3D conversion.", "#f0a848", "A3", "Work Stuff"),
-        app("markrush", "MarkRush", "MarkRush", "Markdown-focused writing and publishing tools.", "#e05d7b", "MR", "Work Stuff"),
-        app("opensplit", "OpenSplit", "OpenSplit", "Split-screen and window workflow utility.", "#4fb6d8", "OS", "Work Stuff"),
-        app("venice-media-local", "Venice Media", "VeniceMediaLocal", "Local Venice media generator.", "#34c6a3", "VM", "Work Stuff"),
-        app("purpleplanet", "PurplePlanet", "PurplePlanet", "Creative app from the ForPublic collection.", "#8c65df", "PP", "Fun Stuff"),
-        app("stargaze", "StarGaze", "StarGaze", "Astronomy and sky-oriented utility.", "#6b7cff", "SG", "Fun Stuff"),
+        app("batchlapse", "BatchLapse", "BatchLapse", "Batch video timelapse exporter for MP4, WebM, and GitHub-friendly GIFs.", "#5b8def", "BL", "Work Stuff", None),
+        app("depth-map-ai-generator", "DepthMap AI", "DepthMapAIGenerator", "Batch depth-map and WebP generator for local AI image workflows.", "#43b883", "DM", "Work Stuff", None),
+        app("image-to-ascii-3d", "ASCII 3D", "ImageToASCII3D", "Image-to-ASCII converter with optional depth-map driven 3D parallax exports.", "#f0a848", "A3", "Work Stuff", None),
+        app("markrush", "MarkRush", "MarkRush", "Fast local Markdown viewer/editor built for huge files and folders.", "#e05d7b", "MR", "Work Stuff", None),
+        app("opensplit", "OpenSplit", "OpenSplit", "Multi-pane terminal harness for AI coding agents, shells, and SSH sessions.", "#4fb6d8", "OS", "Work Stuff", None),
+        app("venice-media-local", "Venice Media", "VeniceMediaLocal", "Local Venice API media workspace for images, video, music, voice, and cleanup.", "#34c6a3", "VM", "Work Stuff", None),
+        app("purpleplanet", "PurplePlanet", "PurplePlanet", "Luminous Three.js planet motion art for live wallpapers and screensavers.", "#8c65df", "PP", "Fun Stuff", Some("https://nekolegends.com/res/projects/purplePlanet/")),
+        app("stargaze", "StarGaze", "StarGaze", "Glittering Three.js starfield wallpaper and screensaver with tunable motion.", "#6b7cff", "SG", "Fun Stuff", Some("https://nekolegends.com/res/projects/starGaze/")),
     ]
 }
 
-fn app(id: &str, name: &str, repo: &str, description: &str, accent: &str, icon: &str, category: &str) -> LauncherApp {
+fn app(id: &str, name: &str, repo: &str, description: &str, accent: &str, icon: &str, category: &str, demo_url: Option<&str>) -> LauncherApp {
     LauncherApp {
         id: id.to_string(),
         name: name.to_string(),
@@ -191,6 +225,9 @@ fn app(id: &str, name: &str, repo: &str, description: &str, accent: &str, icon: 
         release_checked_at: None,
         release_notes: None,
         release_options: Vec::new(),
+        package_preference: PackagePreference::Portable,
+        package_path: None,
+        demo_url: demo_url.map(str::to_string),
         visible: true,
     }
 }
@@ -245,7 +282,9 @@ fn read_apps(app: &AppHandle) -> Vec<LauncherApp> {
     let saved = apps_path(app)
         .map(|path| read_json_file(&path, Vec::<LauncherApp>::new()))
         .unwrap_or_default();
-    merge_default_apps(saved)
+    let mut apps = merge_default_apps(saved);
+    auto_detect_installed_apps(&mut apps);
+    apps
 }
 
 fn merge_default_apps(saved: Vec<LauncherApp>) -> Vec<LauncherApp> {
@@ -262,6 +301,8 @@ fn merge_default_apps(saved: Vec<LauncherApp>) -> Vec<LauncherApp> {
             app.release_checked_at = saved_app.release_checked_at;
             app.release_notes = saved_app.release_notes;
             app.release_options = saved_app.release_options;
+            app.package_preference = saved_app.package_preference;
+            app.package_path = saved_app.package_path;
             app.visible = saved_app.visible;
             if !saved_app.category.trim().is_empty() {
                 app.category = saved_app.category;
@@ -282,6 +323,263 @@ fn merge_default_apps(saved: Vec<LauncherApp>) -> Vec<LauncherApp> {
 fn save_apps(app: &AppHandle, apps: &[LauncherApp]) -> Result<(), String> {
     let path = apps_path(app)?;
     write_json_file(&path, &apps)
+}
+
+#[derive(Debug, Clone)]
+struct DetectedInstall {
+    executable_path: Option<PathBuf>,
+    package_path: Option<PathBuf>,
+    version: Option<String>,
+}
+
+fn auto_detect_installed_apps(apps: &mut [LauncherApp]) {
+    for launcher_app in apps.iter_mut() {
+        if app_download_artifact_exists(launcher_app) {
+            continue;
+        }
+        if let Some(install) = detect_local_install(launcher_app).or_else(|| detect_installed_app(launcher_app)) {
+            if let Some(executable_path) = install.executable_path {
+                launcher_app.executable_path = Some(executable_path.to_string_lossy().to_string());
+            }
+            if let Some(package_path) = install.package_path {
+                launcher_app.package_path = Some(package_path.to_string_lossy().to_string());
+            }
+            if install.version.is_some() {
+                launcher_app.installed_version = install.version;
+            }
+        }
+    }
+}
+
+fn path_option_exists(path: &Option<String>) -> bool {
+    path
+        .as_deref()
+        .is_some_and(|path| Path::new(path).exists())
+}
+
+fn app_download_artifact_exists(launcher_app: &LauncherApp) -> bool {
+    if launcher_app.demo_url.is_some() {
+        path_option_exists(&launcher_app.package_path)
+    } else {
+        path_option_exists(&launcher_app.executable_path)
+    }
+}
+
+fn detect_local_install(launcher_app: &LauncherApp) -> Option<DetectedInstall> {
+    let root = default_install_dir().ok()?.join(&launcher_app.id);
+    if !root.exists() {
+        return None;
+    }
+
+    if launcher_app.demo_url.is_some() {
+        let package_path = find_best_package_archive(&root, &launcher_app.id, &launcher_app.repo).ok().flatten()?;
+        return Some(DetectedInstall {
+            version: version_from_install_path(&root, &package_path),
+            executable_path: None,
+            package_path: Some(package_path),
+        });
+    }
+
+    let launch_path = find_best_launch_path(&root, &launcher_app.id, &launcher_app.repo).ok().flatten()?;
+    cleanup_redundant_archives_near_launch_path(&launch_path);
+
+    Some(DetectedInstall {
+        version: version_from_install_path(&root, &launch_path),
+        executable_path: Some(launch_path),
+        package_path: None,
+    })
+}
+
+fn version_from_install_path(root: &Path, launch_path: &Path) -> Option<String> {
+    let relative = launch_path.parent()?.strip_prefix(root).ok()?;
+    relative
+        .components()
+        .next()
+        .and_then(|component| component.as_os_str().to_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+}
+
+#[cfg(not(windows))]
+fn detect_installed_app(_launcher_app: &LauncherApp) -> Option<DetectedInstall> {
+    None
+}
+
+#[cfg(windows)]
+fn detect_installed_app(launcher_app: &LauncherApp) -> Option<DetectedInstall> {
+    let hives = [
+        (RegKey::predef(HKEY_CURRENT_USER), "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall"),
+        (RegKey::predef(HKEY_LOCAL_MACHINE), "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall"),
+        (RegKey::predef(HKEY_LOCAL_MACHINE), "Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall"),
+    ];
+
+    for (hive, uninstall_path) in hives {
+        let Ok(uninstall_root) = hive.open_subkey(uninstall_path) else {
+            continue;
+        };
+
+        for subkey_name in uninstall_root.enum_keys().flatten() {
+            let Ok(app_key) = uninstall_root.open_subkey(subkey_name) else {
+                continue;
+            };
+            let display_name: String = app_key.get_value("DisplayName").unwrap_or_default();
+            if registry_display_name_matches_app(&display_name, launcher_app) {
+                if let Some(install) = detected_install_from_registry_key(&app_key, launcher_app) {
+                    return Some(install);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+#[cfg(windows)]
+fn detected_install_from_registry_key(key: &RegKey, launcher_app: &LauncherApp) -> Option<DetectedInstall> {
+    let version = key
+        .get_value::<String, _>("DisplayVersion")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+
+    for candidate in registry_executable_candidates(key, launcher_app) {
+        if candidate.exists() {
+            return Some(DetectedInstall {
+                executable_path: Some(candidate),
+                package_path: None,
+                version,
+            });
+        }
+    }
+
+    None
+}
+
+#[cfg(windows)]
+fn registry_executable_candidates(key: &RegKey, launcher_app: &LauncherApp) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Ok(value) = key.get_value::<String, _>("DisplayIcon") {
+        if let Some(path) = command_path_from_registry_value(&value) {
+            if is_launchable_executable_path(&path) {
+                candidates.push(path);
+            }
+        }
+    }
+
+    if let Ok(install_location) = key.get_value::<String, _>("InstallLocation") {
+        if let Some(path) = command_path_from_registry_value(&install_location) {
+            if is_launchable_executable_path(&path) {
+                candidates.push(path);
+            } else {
+                candidates.extend(expected_executable_names(launcher_app).into_iter().map(|name| path.join(name)));
+                if let Ok(Some(best)) = find_best_executable(&path, &launcher_app.id, &launcher_app.repo) {
+                    candidates.push(best);
+                }
+            }
+        }
+    }
+
+    if let Ok(value) = key.get_value::<String, _>("UninstallString") {
+        if let Some(path) = command_path_from_registry_value(&value) {
+            if let Some(parent) = path.parent() {
+                candidates.extend(expected_executable_names(launcher_app).into_iter().map(|name| parent.join(name)));
+                if let Ok(Some(best)) = find_best_executable(parent, &launcher_app.id, &launcher_app.repo) {
+                    candidates.push(best);
+                }
+            }
+        }
+    }
+
+    candidates
+}
+
+#[cfg(windows)]
+fn registry_display_name_matches_app(display_name: &str, launcher_app: &LauncherApp) -> bool {
+    let display_name = normalized_install_name(display_name);
+    app_install_name_aliases(launcher_app)
+        .into_iter()
+        .any(|alias| normalized_install_name(&alias) == display_name)
+}
+
+#[cfg(windows)]
+fn app_install_name_aliases(launcher_app: &LauncherApp) -> Vec<String> {
+    let mut aliases = vec![
+        launcher_app.name.clone(),
+        launcher_app.repo.clone(),
+        launcher_app.id.clone(),
+    ];
+    if launcher_app.id == VENICE_MEDIA_LOCAL_ID {
+        aliases.push(VENICE_MEDIA_LOCAL_DISPLAY_NAME.to_string());
+    }
+    aliases
+}
+
+#[cfg(windows)]
+fn expected_executable_names(launcher_app: &LauncherApp) -> Vec<String> {
+    let mut names = vec![
+        format!("{}.exe", launcher_app.id.to_ascii_lowercase()),
+        format!("{}.exe", launcher_app.repo.to_ascii_lowercase()),
+        format!("{}.exe", normalized_install_name(&launcher_app.repo)),
+        format!("{}.exe", normalized_install_name(&launcher_app.name)),
+    ];
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn is_launchable_executable_path(path: &Path) -> bool {
+    if !path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+    {
+        return false;
+    }
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    !(name.contains("setup") || name.contains("installer") || name.contains("uninstall") || name.contains("update"))
+}
+
+#[cfg(windows)]
+fn normalized_install_name(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(|character| character.to_lowercase())
+        .collect()
+}
+
+#[cfg(windows)]
+fn command_path_from_registry_value(value: &str) -> Option<PathBuf> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let command = if let Some(rest) = trimmed.strip_prefix('"') {
+        rest.split_once('"')
+            .map(|(path, _)| path)
+            .unwrap_or(rest)
+            .trim()
+            .to_string()
+    } else {
+        trimmed
+            .split_once(".exe")
+            .map(|(path, _)| format!("{path}.exe"))
+            .unwrap_or_else(|| trimmed.split(',').next().unwrap_or(trimmed).to_string())
+            .trim()
+            .to_string()
+    };
+
+    let command = command.trim_matches('"');
+    if command.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(command))
+    }
 }
 
 fn default_install_dir() -> Result<PathBuf, String> {
@@ -311,7 +609,18 @@ fn safe_file_segment(value: &str) -> String {
     }
 }
 
-fn release_asset_score(asset: &GitHubReleaseAsset) -> i32 {
+fn is_installer_asset_name(name: &str) -> bool {
+    name.ends_with(".msi") || name.contains("setup") || name.contains("installer")
+}
+
+fn is_portable_asset_name(name: &str) -> bool {
+    name.ends_with(".zip")
+        || name.contains("portable")
+        || name.contains("standalone")
+        || (name.ends_with(".exe") && !is_installer_asset_name(name))
+}
+
+fn release_asset_score(asset: &GitHubReleaseAsset, package_preference: &PackagePreference) -> i32 {
     let name = asset.name.to_ascii_lowercase();
     if name.ends_with(".blockmap")
         || name.ends_with(".sig")
@@ -329,42 +638,68 @@ fn release_asset_score(asset: &GitHubReleaseAsset) -> i32 {
     }
 
     let mut score = 0;
-    if name.ends_with(".exe") {
-        score += 60;
+
+    match package_preference {
+        PackagePreference::Portable => {
+            if !is_portable_asset_name(&name) {
+                return -100;
+            }
+            if name.ends_with(".exe") {
+                score += 80;
+            }
+            if name.ends_with(".zip") {
+                score += 65;
+            }
+            if name.contains("portable") {
+                score += 40;
+            }
+            if name.contains("standalone") {
+                score += 35;
+            }
+            if is_installer_asset_name(&name) {
+                score -= 120;
+            }
+        }
+        PackagePreference::Installer => {
+            if !is_installer_asset_name(&name) {
+                return -100;
+            }
+            if name.ends_with(".msi") {
+                score += 80;
+            }
+            if name.contains("setup") || name.contains("installer") {
+                score += 70;
+            }
+            if name.ends_with(".exe") {
+                score += 45;
+            }
+        }
     }
-    if name.ends_with(".zip") {
-        score += 45;
-    }
-    if name.ends_with(".msi") {
-        score += 25;
-    }
-    if name.contains("portable") {
-        score += 30;
-    }
+
     if name.contains("win") || name.contains("windows") {
         score += 25;
     }
     if name.contains("x64") || name.contains("amd64") {
         score += 15;
     }
-    if name.contains("setup") || name.contains("installer") {
-        score -= 10;
-    }
     score
 }
 
-fn best_release_asset(release: &GitHubRelease) -> Option<&GitHubReleaseAsset> {
+fn best_release_asset<'a>(
+    release: &'a GitHubRelease,
+    package_preference: &PackagePreference,
+) -> Option<&'a GitHubReleaseAsset> {
     release
         .assets
         .iter()
         .filter(|asset| !asset.browser_download_url.trim().is_empty())
-        .max_by_key(|asset| release_asset_score(asset))
-        .filter(|asset| release_asset_score(asset) > 0)
+        .max_by_key(|asset| release_asset_score(asset, package_preference))
+        .filter(|asset| release_asset_score(asset, package_preference) > 0)
 }
 
 fn github_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .user_agent("NekoLegendsControlCenter/26.5.21")
+        .user_agent("NekoLegendsControlCenter/26.6.5")
         .build()
         .map_err(|err| err.to_string())
 }
@@ -384,6 +719,35 @@ fn release_options(releases: &[GitHubRelease]) -> Vec<ReleaseOption> {
             html_url: release.html_url.clone(),
         })
         .collect()
+}
+
+fn version_parts(version: &str) -> Vec<u32> {
+    version
+        .trim()
+        .trim_start_matches('v')
+        .split(|character: char| !character.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .map(|part| part.parse::<u32>().unwrap_or(0))
+        .collect()
+}
+
+fn is_newer_version(latest: &str, current: &str) -> bool {
+    let latest_parts = version_parts(latest);
+    let current_parts = version_parts(current);
+    let max_len = latest_parts.len().max(current_parts.len()).max(1);
+
+    for index in 0..max_len {
+        let latest_part = *latest_parts.get(index).unwrap_or(&0);
+        let current_part = *current_parts.get(index).unwrap_or(&0);
+        if latest_part > current_part {
+            return true;
+        }
+        if latest_part < current_part {
+            return false;
+        }
+    }
+
+    false
 }
 
 async fn fetch_releases(client: &reqwest::Client, repo: &str) -> Result<Vec<GitHubRelease>, String> {
@@ -466,6 +830,213 @@ fn find_best_executable(root: &Path, app_id: &str, repo: &str) -> Result<Option<
     }
 
     Ok(best.map(|(_, path)| path))
+}
+
+fn is_web_launch_path(path: &Path) -> bool {
+    path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("html") || extension.eq_ignore_ascii_case("htm"))
+}
+
+fn is_launch_path(path: &Path) -> bool {
+    is_launchable_executable_path(path) || is_web_launch_path(path)
+}
+
+fn web_launch_score(path: &Path, app_id: &str, repo: &str) -> i32 {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let app_id = app_id.to_ascii_lowercase();
+    let repo = repo.to_ascii_lowercase();
+    let mut score = 10;
+
+    if name == "wallpaper.html" {
+        score += 90;
+    }
+    if name == "index.html" {
+        score += 70;
+    }
+    if name.contains(&app_id) || name.contains(&repo) {
+        score += 30;
+    }
+    if name.contains("readme") || name.contains("license") {
+        score -= 100;
+    }
+    score
+}
+
+fn find_lively_launch_path(root: &Path) -> Result<Option<PathBuf>, String> {
+    let mut stack = vec![root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).map_err(|err| err.to_string())? {
+            let entry = entry.map_err(|err| err.to_string())?;
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+
+            let is_lively_info = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("LivelyInfo.json"));
+            if !is_lively_info {
+                continue;
+            }
+
+            let raw = fs::read_to_string(&path).map_err(|err| err.to_string())?;
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+                continue;
+            };
+            let Some(file_name) = value
+                .get("FileName")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+            else {
+                continue;
+            };
+            let Some(parent) = path.parent() else {
+                continue;
+            };
+            let candidate = parent.join(file_name);
+            if candidate.exists() && is_launch_path(&candidate) {
+                return Ok(Some(candidate));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+fn find_best_web_launch_path(root: &Path, app_id: &str, repo: &str) -> Result<Option<PathBuf>, String> {
+    let mut stack = vec![root.to_path_buf()];
+    let mut best: Option<(i32, PathBuf)> = None;
+
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).map_err(|err| err.to_string())? {
+            let entry = entry.map_err(|err| err.to_string())?;
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if is_web_launch_path(&path) {
+                let score = web_launch_score(&path, app_id, repo);
+                let should_replace = match best.as_ref() {
+                    Some((best_score, _)) => score > *best_score,
+                    None => true,
+                };
+                if should_replace {
+                    best = Some((score, path));
+                }
+            }
+        }
+    }
+
+    Ok(best.map(|(_, path)| path))
+}
+
+fn find_best_launch_path(root: &Path, app_id: &str, repo: &str) -> Result<Option<PathBuf>, String> {
+    if let Some(executable_path) = find_best_executable(root, app_id, repo)? {
+        return Ok(Some(executable_path));
+    }
+    if let Some(lively_path) = find_lively_launch_path(root)? {
+        return Ok(Some(lively_path));
+    }
+    find_best_web_launch_path(root, app_id, repo)
+}
+
+fn package_archive_score(path: &Path, app_id: &str, repo: &str) -> i32 {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let app_id = app_id.to_ascii_lowercase();
+    let repo = repo.to_ascii_lowercase();
+    let mut score = 10;
+
+    if name.contains(&app_id) || name.contains(&repo) {
+        score += 50;
+    }
+    if name.contains("source") || name.contains("src") {
+        score -= 40;
+    }
+    score
+}
+
+fn find_best_package_archive(root: &Path, app_id: &str, repo: &str) -> Result<Option<PathBuf>, String> {
+    let mut stack = vec![root.to_path_buf()];
+    let mut best: Option<(i32, PathBuf)> = None;
+
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).map_err(|err| err.to_string())? {
+            let entry = entry.map_err(|err| err.to_string())?;
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+            {
+                let score = package_archive_score(&path, app_id, repo);
+                let should_replace = match best.as_ref() {
+                    Some((best_score, _)) => score > *best_score,
+                    None => true,
+                };
+                if should_replace {
+                    best = Some((score, path));
+                }
+            }
+        }
+    }
+
+    Ok(best.map(|(_, path)| path))
+}
+
+fn cleanup_redundant_archives_near_launch_path(launch_path: &Path) {
+    let Some(folder) = launch_path.parent() else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(folder) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+        {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+fn cleanup_wallpaper_package_dir(target_dir: &Path, package_path: &Path) -> Result<(), String> {
+    let package_path = package_path.canonicalize().unwrap_or_else(|_| package_path.to_path_buf());
+    for entry in fs::read_dir(target_dir).map_err(|err| err.to_string())? {
+        let entry = entry.map_err(|err| err.to_string())?;
+        let path = entry.path();
+        let comparable_path = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if comparable_path == package_path {
+            continue;
+        }
+        if path.is_dir() {
+            fs::remove_dir_all(&path).map_err(|err| err.to_string())?;
+        } else {
+            fs::remove_file(&path).map_err(|err| err.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 fn extract_zip(zip_path: &Path, target_dir: &Path) -> Result<(), String> {
@@ -587,7 +1158,10 @@ fn save_executable(app: AppHandle, request: SaveExecutableRequest) -> Result<Vec
         .ok_or_else(|| "App was not found".to_string())?;
     let path = PathBuf::from(request.executable_path.trim());
     if !path.exists() {
-        return Err("Executable path does not exist".to_string());
+        return Err("Launch path does not exist".to_string());
+    }
+    if !is_launch_path(&path) {
+        return Err("Choose an .exe, .html, or .htm launch file.".to_string());
     }
     target.executable_path = Some(path.to_string_lossy().to_string());
     save_apps(&app, &apps)?;
@@ -631,6 +1205,8 @@ fn reset_layout(app: AppHandle) -> Result<ControlCenterState, String> {
             default_app.release_checked_at = existing.release_checked_at.clone();
             default_app.release_notes = existing.release_notes.clone();
             default_app.release_options = existing.release_options.clone();
+            default_app.package_preference = existing.package_preference.clone();
+            default_app.package_path = existing.package_path.clone();
         }
         default_app.visible = true;
         reset_apps.push(default_app);
@@ -650,16 +1226,22 @@ fn launch_app(app: AppHandle, request: LaunchRequest) -> Result<(), String> {
         .find(|candidate| candidate.id == request.app_id)
         .ok_or_else(|| "App was not found".to_string())?;
     let Some(executable_path) = launcher_app.executable_path.as_deref() else {
-        return Err("No executable path has been configured for this app".to_string());
+        return Err("No launch file has been configured for this app".to_string());
     };
     let path = PathBuf::from(executable_path);
     if !path.exists() {
-        return Err("Configured executable no longer exists".to_string());
+        return Err("Configured launch file no longer exists".to_string());
     }
-    Command::new(path)
-        .spawn()
-        .map(|_| ())
-        .map_err(|err| err.to_string())
+    if is_launchable_executable_path(&path) {
+        Command::new(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|err| err.to_string())
+    } else if is_web_launch_path(&path) {
+        open::that(path).map_err(|err| err.to_string())
+    } else {
+        Err("Configured launch file is not supported".to_string())
+    }
 }
 
 #[tauri::command]
@@ -679,6 +1261,59 @@ fn open_release_url(app: AppHandle, request: LaunchRequest) -> Result<(), String
 }
 
 #[tauri::command]
+fn open_demo_url(app: AppHandle, request: LaunchRequest) -> Result<(), String> {
+    let apps = read_apps(&app);
+    let launcher_app = apps
+        .iter()
+        .find(|candidate| candidate.id == request.app_id)
+        .ok_or_else(|| "App was not found".to_string())?;
+    let url = launcher_app
+        .demo_url
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "This app does not have a hosted demo.".to_string())?;
+    open::that(url).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+async fn check_control_center_update(app: AppHandle) -> Result<ControlCenterUpdate, String> {
+    let client = github_client()?;
+    let current_version = app.package_info().version.to_string();
+    let checked_at = Utc::now().to_rfc3339();
+
+    match fetch_releases(&client, CONTROL_CENTER_REPO).await {
+        Ok(releases) => {
+            let latest = releases.first();
+            let latest_version = latest.map(|release| release.tag_name.clone());
+            let release_url = latest.map(|release| release.html_url.clone());
+            let release_notes = latest.and_then(|release| release.body.as_ref().map(|body| body.chars().take(240).collect()));
+            let update_available = latest_version
+                .as_deref()
+                .is_some_and(|latest| is_newer_version(latest, &current_version));
+
+            Ok(ControlCenterUpdate {
+                current_version,
+                latest_version,
+                release_url,
+                release_notes,
+                checked_at,
+                update_available,
+            })
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[tauri::command]
+fn open_control_center_release(update: ControlCenterUpdate) -> Result<(), String> {
+    let url = update
+        .release_url
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| format!("https://github.com/{}/{}/releases", GITHUB_OWNER, CONTROL_CENTER_REPO));
+    open::that(url).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
 fn open_install_folder(app: AppHandle, request: LaunchRequest) -> Result<(), String> {
     let apps = read_apps(&app);
     let launcher_app = apps
@@ -688,6 +1323,7 @@ fn open_install_folder(app: AppHandle, request: LaunchRequest) -> Result<(), Str
     let folder = launcher_app
         .executable_path
         .as_deref()
+        .or(launcher_app.package_path.as_deref())
         .map(PathBuf::from)
         .and_then(|path| path.parent().map(Path::to_path_buf))
         .unwrap_or(default_install_dir()?.join(&launcher_app.id));
@@ -743,6 +1379,10 @@ async fn download_release(
         .position(|candidate| candidate.id == request.app_id)
         .ok_or_else(|| "App was not found".to_string())?;
     let repo = apps[index].repo.clone();
+    let package_preference = request
+        .package_preference
+        .clone()
+        .unwrap_or_else(|| apps[index].package_preference.clone());
     let releases = fetch_releases(&client, &repo).await?;
     let release = request
         .version
@@ -750,8 +1390,11 @@ async fn download_release(
         .and_then(|version| releases.iter().find(|candidate| candidate.tag_name == version))
         .or_else(|| releases.first())
         .ok_or_else(|| "No public releases found yet.".to_string())?;
-    let asset = best_release_asset(release)
-        .ok_or_else(|| "Selected release does not have a Windows download asset.".to_string())?;
+    let asset = best_release_asset(release, &package_preference)
+        .ok_or_else(|| match package_preference {
+            PackagePreference::Portable => "Selected release does not have a portable Windows download asset.".to_string(),
+            PackagePreference::Installer => "Selected release does not have a Windows installer asset.".to_string(),
+        })?;
     let file_name = safe_file_segment(&asset.name);
     let tag_name = release.tag_name.clone();
     let target_dir = default_install_dir()?
@@ -771,37 +1414,73 @@ async fn download_release(
     let bytes = response.bytes().await.map_err(|err| err.to_string())?;
     fs::write(&target_path, &bytes).map_err(|err| err.to_string())?;
 
-    if target_path
+    let is_zip_asset = target_path
         .extension()
         .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
-    {
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"));
+    let is_wallpaper_package = apps[index].demo_url.is_some() && is_zip_asset;
+    let mut extracted_archive = false;
+    if is_wallpaper_package {
+        cleanup_wallpaper_package_dir(&target_dir, &target_path)?;
+    }
+    if is_zip_asset && !is_wallpaper_package {
         extract_zip(&target_path, &target_dir)?;
+        extracted_archive = true;
     }
 
-    let executable_path = if target_path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
-    {
+    let downloaded_name = target_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let executable_path = match package_preference {
+        PackagePreference::Portable if target_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+            && !is_installer_asset_name(&downloaded_name) => Some(target_path.clone()),
+        PackagePreference::Portable => find_best_launch_path(&target_dir, &apps[index].id, &repo)?,
+        PackagePreference::Installer => None,
+    };
+    let package_path = if is_wallpaper_package {
         Some(target_path.clone())
     } else {
-        find_best_executable(&target_dir, &apps[index].id, &repo)?
+        None
     };
+    if extracted_archive {
+        if let Some(executable_path) = executable_path.as_deref() {
+            cleanup_redundant_archives_near_launch_path(executable_path);
+        } else {
+            let _ = fs::remove_file(&target_path);
+        }
+    }
+    let result_file_path = executable_path
+        .as_ref()
+        .or(package_path.as_ref())
+        .unwrap_or(&target_path)
+        .to_string_lossy()
+        .to_string();
 
     if let Some(latest_release) = releases.first() {
         apply_release_metadata(&mut apps[index], latest_release, &Utc::now().to_rfc3339());
     }
     apps[index].release_options = release_options(&releases);
+    apps[index].package_preference = package_preference;
     apps[index].installed_version = Some(tag_name);
     if let Some(executable_path) = executable_path {
         apps[index].executable_path = Some(executable_path.to_string_lossy().to_string());
+    }
+    if let Some(package_path) = package_path {
+        apps[index].package_path = Some(package_path.to_string_lossy().to_string());
+        if apps[index].demo_url.is_some() {
+            apps[index].executable_path = None;
+        }
     }
 
     save_apps(&app, &apps)?;
     Ok(DownloadResult {
         apps,
-        file_path: target_path.to_string_lossy().to_string(),
+        file_path: result_file_path,
         install_folder: target_dir.to_string_lossy().to_string(),
     })
 }
@@ -835,6 +1514,9 @@ fn main() {
             reset_layout,
             launch_app,
             open_release_url,
+            open_demo_url,
+            check_control_center_update,
+            open_control_center_release,
             open_install_folder,
             scan_releases,
             download_release,
