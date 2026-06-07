@@ -6,7 +6,7 @@ use std::{
     fs,
     io,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 use tauri::{AppHandle, Manager, PhysicalSize, Size, WebviewWindow, WindowEvent};
 #[cfg(windows)]
@@ -697,6 +697,44 @@ fn best_release_asset<'a>(
         .filter(|asset| release_asset_score(asset, package_preference) > 0)
 }
 
+fn control_center_asset_score(asset: &GitHubReleaseAsset) -> i32 {
+    let name = asset.name.to_ascii_lowercase();
+    if name.contains("updater") || name.contains("uninstall") {
+        return -100;
+    }
+    let base_score = release_asset_score(asset, &PackagePreference::Portable);
+    if base_score <= 0 {
+        return base_score;
+    }
+
+    let mut score = base_score;
+    if name == "neko-legends-control-center-portable.exe" {
+        score += 140;
+    }
+    if name.contains("control") || name.contains("nekolegends") || name.contains("neko-legends") {
+        score += 50;
+    }
+    if name.contains("portable") {
+        score += 50;
+    }
+    if name.ends_with(".exe") {
+        score += 25;
+    }
+    if is_installer_asset_name(&name) {
+        score -= 200;
+    }
+    score
+}
+
+fn best_control_center_asset(release: &GitHubRelease) -> Option<&GitHubReleaseAsset> {
+    release
+        .assets
+        .iter()
+        .filter(|asset| !asset.browser_download_url.trim().is_empty())
+        .max_by_key(|asset| control_center_asset_score(asset))
+        .filter(|asset| control_center_asset_score(asset) > 0)
+}
+
 fn github_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .user_agent("NekoLegendsControlCenter/26.6.5")
@@ -830,6 +868,63 @@ fn find_best_executable(root: &Path, app_id: &str, repo: &str) -> Result<Option<
     }
 
     Ok(best.map(|(_, path)| path))
+}
+
+fn control_center_executable_score(path: &Path) -> i32 {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let compact_name: String = name
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect();
+    let mut score = 10;
+
+    if name == "neko-legends-control-center-portable.exe" {
+        score += 140;
+    }
+    if compact_name.contains("nekolegendscontrolcenter") {
+        score += 80;
+    }
+    if name.contains("control") {
+        score += 40;
+    }
+    if name.contains("portable") || name.contains("standalone") {
+        score += 35;
+    }
+    score
+}
+
+fn find_control_center_update_executable(root: &Path) -> Result<Option<PathBuf>, String> {
+    let mut stack = vec![root.to_path_buf()];
+    let mut best: Option<(i32, PathBuf)> = None;
+
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).map_err(|err| err.to_string())? {
+            let entry = entry.map_err(|err| err.to_string())?;
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if is_launchable_executable_path(&path) {
+                let score = control_center_executable_score(&path);
+                let should_replace = match best.as_ref() {
+                    Some((best_score, _)) => score > *best_score,
+                    None => true,
+                };
+                if should_replace {
+                    best = Some((score, path));
+                }
+            }
+        }
+    }
+
+    Ok(best
+        .filter(|(score, _)| *score > 20)
+        .map(|(_, path)| path))
 }
 
 fn is_web_launch_path(path: &Path) -> bool {
@@ -1313,6 +1408,198 @@ fn open_control_center_release(update: ControlCenterUpdate) -> Result<(), String
     open::that(url).map_err(|err| err.to_string())
 }
 
+fn ensure_update_target_writable(target_exe: &Path) -> Result<PathBuf, String> {
+    let target_dir = target_exe
+        .parent()
+        .ok_or_else(|| "Could not locate the Control Center folder.".to_string())?
+        .to_path_buf();
+    let probe_path = target_dir.join(format!(".nlcc-update-check-{}", std::process::id()));
+    fs::write(&probe_path, b"ok").map_err(|_| {
+        "This Control Center folder is protected. Download the latest portable build from the release page instead.".to_string()
+    })?;
+    let _ = fs::remove_file(probe_path);
+    Ok(target_dir)
+}
+
+fn self_update_script() -> &'static str {
+    r#"
+param(
+    [int]$ParentPid,
+    [string]$SourceExe,
+    [string]$TargetExe,
+    [string]$RelaunchDir,
+    [string]$LogPath
+)
+
+$ErrorActionPreference = 'Stop'
+
+function Write-UpdateLog {
+    param([string]$Message)
+    try {
+        $folder = Split-Path -Parent $LogPath
+        if ($folder -and -not (Test-Path -LiteralPath $folder)) {
+            New-Item -ItemType Directory -Path $folder -Force | Out-Null
+        }
+        Add-Content -LiteralPath $LogPath -Value ("{0} {1}" -f (Get-Date).ToString("s"), $Message)
+    } catch {
+    }
+}
+
+try {
+    Write-UpdateLog "Waiting for Control Center to close."
+    $deadline = (Get-Date).AddSeconds(60)
+    while ((Get-Date) -lt $deadline) {
+        $running = Get-Process -Id $ParentPid -ErrorAction SilentlyContinue
+        if ($null -eq $running) {
+            break
+        }
+        Start-Sleep -Milliseconds 250
+    }
+
+    if (-not (Test-Path -LiteralPath $SourceExe)) {
+        throw "Downloaded update file is missing."
+    }
+    if (-not (Test-Path -LiteralPath $RelaunchDir)) {
+        New-Item -ItemType Directory -Path $RelaunchDir -Force | Out-Null
+    }
+
+    $backup = Join-Path $RelaunchDir ((Split-Path -Leaf $TargetExe) + ".previous")
+    Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+
+    $copied = $false
+    for ($attempt = 0; $attempt -lt 120; $attempt++) {
+        try {
+            if (Test-Path -LiteralPath $TargetExe) {
+                Copy-Item -LiteralPath $TargetExe -Destination $backup -Force -ErrorAction SilentlyContinue
+            }
+            Copy-Item -LiteralPath $SourceExe -Destination $TargetExe -Force
+            $copied = $true
+            break
+        } catch {
+            Start-Sleep -Milliseconds 500
+        }
+    }
+
+    if (-not $copied) {
+        if ((-not (Test-Path -LiteralPath $TargetExe)) -and (Test-Path -LiteralPath $backup)) {
+            Move-Item -LiteralPath $backup -Destination $TargetExe -Force
+        }
+        if (Test-Path -LiteralPath $TargetExe) {
+            Start-Process -FilePath $TargetExe -WorkingDirectory $RelaunchDir
+        }
+        throw "Could not replace the Control Center executable."
+    }
+
+    Write-UpdateLog "Launching updated Control Center."
+    Start-Process -FilePath $TargetExe -WorkingDirectory $RelaunchDir
+} catch {
+    Write-UpdateLog ("Update failed: " + $_.Exception.Message)
+    if (Test-Path -LiteralPath $TargetExe) {
+        Start-Process -FilePath $TargetExe -WorkingDirectory $RelaunchDir
+    }
+}
+"#
+}
+
+fn schedule_control_center_update(app: &AppHandle, source_exe: &Path) -> Result<(), String> {
+    if !cfg!(windows) {
+        return Err("Automatic Control Center updates are currently supported on Windows portable builds.".to_string());
+    }
+
+    if !source_exe.exists() {
+        return Err("Downloaded Control Center update file is missing.".to_string());
+    }
+
+    let target_exe = std::env::current_exe().map_err(|err| err.to_string())?;
+    let target_dir = ensure_update_target_writable(&target_exe)?;
+    let updater_dir = app_data_dir(app)?.join("self-updater");
+    fs::create_dir_all(&updater_dir).map_err(|err| err.to_string())?;
+    let script_path = updater_dir.join("apply-control-center-update.ps1");
+    let log_path = updater_dir.join("self-update.log");
+    fs::write(&script_path, self_update_script()).map_err(|err| err.to_string())?;
+
+    Command::new("powershell")
+        .arg("-NoProfile")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-WindowStyle")
+        .arg("Hidden")
+        .arg("-File")
+        .arg(&script_path)
+        .arg("-ParentPid")
+        .arg(std::process::id().to_string())
+        .arg("-SourceExe")
+        .arg(source_exe)
+        .arg("-TargetExe")
+        .arg(&target_exe)
+        .arg("-RelaunchDir")
+        .arg(&target_dir)
+        .arg("-LogPath")
+        .arg(&log_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| err.to_string())?;
+
+    app.exit(0);
+    Ok(())
+}
+
+#[tauri::command]
+async fn install_control_center_update(app: AppHandle) -> Result<(), String> {
+    if !cfg!(windows) {
+        return Err("Automatic Control Center updates are currently supported on Windows portable builds.".to_string());
+    }
+
+    let client = github_client()?;
+    let current_version = app.package_info().version.to_string();
+    let releases = fetch_releases(&client, CONTROL_CENTER_REPO).await?;
+    let release = releases
+        .first()
+        .ok_or_else(|| "No public Control Center releases found yet.".to_string())?;
+    if !is_newer_version(&release.tag_name, &current_version) {
+        return Err("Control Center is already up to date.".to_string());
+    }
+    let asset = best_control_center_asset(release)
+        .ok_or_else(|| "The latest Control Center release does not have a portable Windows download yet.".to_string())?;
+    let staging_dir = app_data_dir(&app)?
+        .join("self-updates")
+        .join(safe_file_segment(&release.tag_name));
+    if staging_dir.exists() {
+        fs::remove_dir_all(&staging_dir).map_err(|err| err.to_string())?;
+    }
+    fs::create_dir_all(&staging_dir).map_err(|err| err.to_string())?;
+
+    let asset_path = staging_dir.join(safe_file_segment(&asset.name));
+    let response = client
+        .get(&asset.browser_download_url)
+        .send()
+        .await
+        .map_err(|err| err.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("Control Center update download failed with {}.", response.status()));
+    }
+    let bytes = response.bytes().await.map_err(|err| err.to_string())?;
+    fs::write(&asset_path, &bytes).map_err(|err| err.to_string())?;
+
+    let is_zip_asset = asset_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"));
+    let source_exe = if is_launchable_executable_path(&asset_path) {
+        asset_path
+    } else if is_zip_asset {
+        extract_zip(&asset_path, &staging_dir)?;
+        find_control_center_update_executable(&staging_dir)?
+            .ok_or_else(|| "The Control Center update package did not include a launchable Windows app.".to_string())?
+    } else {
+        return Err("The latest Control Center download is not a portable Windows app.".to_string());
+    };
+
+    schedule_control_center_update(&app, &source_exe)
+}
+
 #[tauri::command]
 fn open_install_folder(app: AppHandle, request: LaunchRequest) -> Result<(), String> {
     let apps = read_apps(&app);
@@ -1517,6 +1804,7 @@ fn main() {
             open_demo_url,
             check_control_center_update,
             open_control_center_release,
+            install_control_center_update,
             open_install_folder,
             scan_releases,
             download_release,

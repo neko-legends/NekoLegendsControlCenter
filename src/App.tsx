@@ -85,7 +85,7 @@ const themes: Theme[] = [
   { id: 'abyss-teal', name: 'Abyss', colors: ['#161d1f', '#1f2a2c', '#2ec4b6'] },
   { id: 'ember', name: 'Ember', colors: ['#241e18', '#352c24', '#f2a65a'] },
   { id: 'mosswood', name: 'Moss', colors: ['#18201b', '#233028', '#4cc38a'] },
-  { id: 'rose-noir', name: 'Rose', colors: ['#21191b', '#322629', '#e07383'] },
+  { id: 'rose-noir', name: 'Rose', colors: ['#100b12', '#241627', '#ff6f9e'] },
 ]
 
 const defaultCategories = ['Work Stuff', 'Fun Stuff']
@@ -373,6 +373,7 @@ export default function App() {
   const [failedDownloads, setFailedDownloads] = useState<Record<string, boolean>>({})
   const [contextMenu, setContextMenu] = useState<AppContextMenu | null>(null)
   const [controlCenterUpdate, setControlCenterUpdate] = useState<ControlCenterUpdate | null>(null)
+  const [controlCenterUpdating, setControlCenterUpdating] = useState(false)
   const draggedItemRef = useRef<DragItem | null>(null)
   const pointerDragRef = useRef<PointerDrag | null>(null)
   const dragListenersRef = useRef<DragListeners | null>(null)
@@ -503,14 +504,25 @@ export default function App() {
     }
   }
 
-  async function openControlCenterUpdate() {
+  async function installControlCenterUpdate() {
     if (!controlCenterUpdate) return
+    setBusy(true)
+    setControlCenterUpdating(true)
+    setNotice(`Downloading Control Center ${controlCenterUpdate.latestVersion ?? 'update'}...`)
     try {
-      await call<void>('open_control_center_release', { update: controlCenterUpdate })
-      setNotice(`Opening Control Center ${controlCenterUpdate.latestVersion ?? 'release'}`)
+      await call<void>('install_control_center_update')
+      setNotice('Restarting Control Center to finish the update...')
     } catch (error) {
-      window.open(controlCenterUpdate.releaseUrl ?? 'https://github.com/neko-legends/NekoLegendsControlCenter/releases', '_blank', 'noopener')
-      setNotice(error instanceof Error ? error.message : String(error))
+      const message = error instanceof Error ? error.message : String(error)
+      try {
+        await call<void>('open_control_center_release', { update: controlCenterUpdate })
+        setNotice(`${message} Opening the release page instead.`)
+      } catch {
+        window.open(controlCenterUpdate.releaseUrl ?? 'https://github.com/neko-legends/NekoLegendsControlCenter/releases', '_blank', 'noopener')
+        setNotice(message)
+      }
+      setControlCenterUpdating(false)
+      setBusy(false)
     }
   }
 
@@ -1268,11 +1280,12 @@ export default function App() {
             <button
               className="control-update-button"
               type="button"
-              onClick={() => void openControlCenterUpdate()}
-              title={`Update available: Control Center ${controlCenterUpdate.latestVersion ?? ''}. Open the latest release.`}
+              onClick={() => void installControlCenterUpdate()}
+              disabled={busy || controlCenterUpdating}
+              title={`Update available: Control Center ${controlCenterUpdate.latestVersion ?? ''}. Download, restart, and install the latest portable build.`}
             >
-              <Download size={16} />
-              Update Control Center
+              {controlCenterUpdating ? <Loader2 className="spin" size={16} /> : <Download size={16} />}
+              {controlCenterUpdating ? 'Installing Update' : 'Update Control Center'}
               <span>{controlCenterUpdate.latestVersion}</span>
             </button>
           )}
