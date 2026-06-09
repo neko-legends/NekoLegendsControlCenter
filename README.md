@@ -6,6 +6,8 @@ The bigger goal is game development. I am building these tools while I build gam
 
 The tools are for humans building manually, humans working with AI agents, and AI agents that need automation-friendly utilities they can launch, inspect, modify, or extend. If we share the boring-but-necessary tools, everyone can move faster.
 
+![Neko Legends Control Center screenshot](screenshot.webp)
+
 ## What People Can Do With It
 
 - Launch local Neko Legends tools from one compact desktop window.
