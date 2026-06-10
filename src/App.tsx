@@ -196,6 +196,10 @@ function needsReleaseScan(appInfo: LauncherApp): boolean {
   return !isComingSoon(appInfo) && !hasKnownRelease(appInfo)
 }
 
+function hasNoPublicRelease(appInfo: LauncherApp): boolean {
+  return appInfo.releaseNotes === 'No public releases found yet.'
+}
+
 function installStatus(appInfo: LauncherApp): 'installed' | 'missing' {
   return isAppDownloaded(appInfo) ? 'installed' : 'missing'
 }
@@ -428,6 +432,7 @@ export default function App() {
     if (failedDownloads[appInfo.id]) return 'failed'
     if (!isAppDownloaded(appInfo) && isComingSoon(appInfo)) return 'coming-soon'
     if (!isAppDownloaded(appInfo) && !hasKnownRelease(appInfo) && !appInfo.releaseCheckedAt) return 'checking'
+    if (!isAppDownloaded(appInfo) && !hasKnownRelease(appInfo) && !hasNoPublicRelease(appInfo)) return 'failed'
     if (!isAppDownloaded(appInfo)) return hasKnownRelease(appInfo) ? 'missing' : 'coming-soon'
     if (versionStatus(appInfo) === 'update') return 'update'
     return 'installed'
