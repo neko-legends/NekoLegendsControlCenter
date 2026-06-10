@@ -52,6 +52,7 @@ type AppSettings = {
   theme: ThemeId
   compactLabels: boolean
   useRemoteCatalog: boolean
+  agentControlAutoStart: boolean
   categories: string[]
 }
 
@@ -77,6 +78,20 @@ type ControlCenterUpdate = {
   updateAvailable: boolean
 }
 
+type AgentControlInfo = {
+  rootDir: string
+  inboxDir: string
+  outboxDir: string
+  historyDir: string
+  statePath: string
+}
+
+type AgentControlPollResult = {
+  processedCount: number
+  apps: LauncherApp[]
+  info: AgentControlInfo
+}
+
 type Theme = {
   id: ThemeId
   name: string
@@ -96,7 +111,7 @@ const defaultCategories = ['Work Stuff', 'Fun Stuff', 'Under Development']
 const githubOwner = 'neko-legends'
 
 const fallbackState: ControlCenterState = {
-  settings: { theme: 'neko-tron', compactLabels: false, useRemoteCatalog: true, categories: defaultCategories },
+  settings: { theme: 'neko-tron', compactLabels: false, useRemoteCatalog: true, agentControlAutoStart: false, categories: defaultCategories },
   buildVersion: 'dev',
   dataDir: '',
   apps: [
@@ -391,6 +406,8 @@ export default function App() {
   const [contextMenu, setContextMenu] = useState<AppContextMenu | null>(null)
   const [controlCenterUpdate, setControlCenterUpdate] = useState<ControlCenterUpdate | null>(null)
   const [controlCenterUpdating, setControlCenterUpdating] = useState(false)
+  const [agentControlEnabled, setAgentControlEnabled] = useState(false)
+  const [agentControlInfo, setAgentControlInfo] = useState<AgentControlInfo | null>(null)
   const draggedItemRef = useRef<DragItem | null>(null)
   const pointerDragRef = useRef<PointerDrag | null>(null)
   const dragListenersRef = useRef<DragListeners | null>(null)
@@ -403,6 +420,7 @@ export default function App() {
   const layoutAnimationRunIdRef = useRef(0)
   const layoutAnimationTimerRef = useRef<number | null>(null)
   const pendingAppPreviewRef = useRef<PendingAppPreview | null>(null)
+  const didApplyAgentAutoStartRef = useRef(false)
 
   const visibleApps = useMemo(() => state.apps.filter((candidate) => candidate.visible), [state.apps])
   const selectedApp = useMemo(
@@ -455,6 +473,45 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (!agentControlEnabled || !isTauriRuntime()) return
+
+    let cancelled = false
+    let polling = false
+
+    async function pollAgentCommands() {
+      if (polling) return
+      polling = true
+      try {
+        const result = await call<AgentControlPollResult>('process_agent_control_commands')
+        if (cancelled) return
+        setAgentControlInfo(result.info)
+        if (result.processedCount > 0) {
+          setState((current) => ({ ...current, apps: result.apps }))
+          setNotice(`Agent control processed ${result.processedCount} command${result.processedCount === 1 ? '' : 's'}`)
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setNotice(error instanceof Error ? error.message : String(error))
+        }
+      } finally {
+        polling = false
+      }
+    }
+
+    void call<AgentControlInfo>('get_agent_control_info').then((info) => {
+      if (!cancelled) setAgentControlInfo(info)
+    }).catch((error) => {
+      if (!cancelled) setNotice(error instanceof Error ? error.message : String(error))
+    })
+    void pollAgentCommands()
+    const interval = window.setInterval(() => void pollAgentCommands(), 2000)
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [agentControlEnabled])
+
+  useEffect(() => {
     if (!contextMenu) return
 
     function closeMenu() {
@@ -485,6 +542,10 @@ export default function App() {
       await call<LauncherApp[]>('refresh_tools_catalog').catch(() => null)
       const nextState = await call<ControlCenterState>('get_state')
       setState(nextState)
+      if (!didApplyAgentAutoStartRef.current) {
+        setAgentControlEnabled(nextState.settings.agentControlAutoStart)
+        didApplyAgentAutoStartRef.current = true
+      }
       const nextVisibleApps = nextState.apps.filter((candidate) => candidate.visible)
       setSelectedId((current) => nextVisibleApps.some((candidate) => candidate.id === current) ? current : nextVisibleApps[0]?.id ?? nextState.apps[0]?.id ?? '')
       if (nextState.apps.some(needsReleaseScan)) {
@@ -784,6 +845,39 @@ export default function App() {
       setNotice(error instanceof Error ? error.message : String(error))
     } finally {
       setBusy(false)
+    }
+  }
+
+  async function setAgentControlRuntime(enabled: boolean) {
+    setAgentControlEnabled(enabled)
+    if (!isTauriRuntime()) {
+      setNotice(enabled ? 'Agent control enabled' : 'Agent control disabled')
+      return
+    }
+
+    try {
+      if (enabled) {
+        const info = await call<AgentControlInfo>('get_agent_control_info')
+        setAgentControlInfo(info)
+        setNotice(`Agent control enabled: ${fileName(info.inboxDir)}`)
+      } else {
+        setNotice('Agent control disabled')
+      }
+    } catch (error) {
+      setAgentControlEnabled(false)
+      setNotice(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async function setAgentControlAutoStart(agentControlAutoStart: boolean) {
+    setState((current) => ({ ...current, settings: { ...current.settings, agentControlAutoStart } }))
+    if (!isTauriRuntime()) return
+    try {
+      const settings = await call<AppSettings>('save_settings', { request: { agentControlAutoStart } })
+      setState((current) => ({ ...current, settings }))
+      setNotice(agentControlAutoStart ? 'Agent control will start with the app' : 'Agent control will stay off at startup')
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error))
     }
   }
 
@@ -1454,6 +1548,24 @@ export default function App() {
                 disabled={busy}
               />
               <span>Remote catalog</span>
+            </label>
+            <label className="toggle-row" title={agentControlInfo ? `Inbox: ${agentControlInfo.inboxDir}` : 'Allow local AI agents to control downloads, updates, and launches'}>
+              <input
+                type="checkbox"
+                checked={agentControlEnabled}
+                onChange={(event) => void setAgentControlRuntime(event.currentTarget.checked)}
+                disabled={busy}
+              />
+              <span>Agent control</span>
+            </label>
+            <label className="toggle-row" title="Start Agent control automatically when the Control Center opens">
+              <input
+                type="checkbox"
+                checked={state.settings.agentControlAutoStart}
+                onChange={(event) => void setAgentControlAutoStart(event.currentTarget.checked)}
+                disabled={busy}
+              />
+              <span>Agent auto-on</span>
             </label>
             <button className="secondary-action reset-action" type="button" onClick={resetLayout} disabled={busy}>
               Reset layout

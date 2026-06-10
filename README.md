@@ -18,6 +18,7 @@ The tools are for humans building manually, humans working with AI agents, and A
 - Open hosted demos for wallpaper art apps like StarGaze and PurplePlanet.
 - Rearrange apps and categories with drag and drop.
 - Switch themes, compact labels, and visible apps.
+- Enable local AI Agent control for scripted status checks, downloads, updates, and launches.
 - Self-update the Control Center from the latest portable release when a newer version is available.
 
 ## Current Tools
@@ -139,6 +140,7 @@ Start here when making changes:
 - `src-tauri\src\main.rs`: app catalog defaults, saved state, GitHub release scanning, downloads, install detection, launching, demo/repo links, and self-update.
 - `catalog\tools.json`: master catalog intended for upload to `https://nekolegends.com/res/nekoLegendsControlCenter/tools.json`.
 - `scripts\build-portable.ps1`: portable build script that renames the Tauri exe and copies it into `release\NekoLegendsControlCenter`.
+- `AGENTS.md`: local file-based Agent control protocol for automation.
 
 Important source-of-truth details:
 

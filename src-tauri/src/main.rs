@@ -92,6 +92,8 @@ struct AppSettings {
     compact_labels: bool,
     #[serde(default = "default_true")]
     use_remote_catalog: bool,
+    #[serde(default)]
+    agent_control_auto_start: bool,
     #[serde(default = "default_categories")]
     categories: Vec<String>,
     window_width: Option<u32>,
@@ -104,6 +106,7 @@ impl Default for AppSettings {
             theme: "neko-tron".to_string(),
             compact_labels: false,
             use_remote_catalog: true,
+            agent_control_auto_start: false,
             categories: default_categories(),
             window_width: None,
             window_height: None,
@@ -126,6 +129,7 @@ struct SaveSettingsRequest {
     theme: Option<String>,
     compact_labels: Option<bool>,
     use_remote_catalog: Option<bool>,
+    agent_control_auto_start: Option<bool>,
     categories: Option<Vec<String>>,
 }
 
@@ -157,6 +161,27 @@ struct DownloadRequest {
     package_preference: Option<PackagePreference>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum AgentControlAction {
+    Status,
+    Scan,
+    Download,
+    Update,
+    Launch,
+    OpenFolder,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentControlCommand {
+    id: Option<String>,
+    action: AgentControlAction,
+    app_id: Option<String>,
+    version: Option<String>,
+    package_preference: Option<PackagePreference>,
+}
+
 #[derive(Debug, Deserialize)]
 struct GitHubRelease {
     tag_name: String,
@@ -177,6 +202,36 @@ struct DownloadResult {
     apps: Vec<LauncherApp>,
     file_path: String,
     install_folder: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentControlInfo {
+    root_dir: String,
+    inbox_dir: String,
+    outbox_dir: String,
+    history_dir: String,
+    state_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentControlResponse {
+    id: Option<String>,
+    action: Option<AgentControlAction>,
+    app_id: Option<String>,
+    ok: bool,
+    message: String,
+    processed_at: String,
+    data: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentControlPollResult {
+    processed_count: usize,
+    apps: Vec<LauncherApp>,
+    info: AgentControlInfo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1498,6 +1553,9 @@ fn save_settings(app: AppHandle, request: SaveSettingsRequest) -> Result<AppSett
     if let Some(use_remote_catalog) = request.use_remote_catalog {
         settings.use_remote_catalog = use_remote_catalog;
     }
+    if let Some(agent_control_auto_start) = request.agent_control_auto_start {
+        settings.agent_control_auto_start = agent_control_auto_start;
+    }
     if let Some(categories) = request.categories {
         settings.categories = normalize_categories(categories);
     }
@@ -1891,6 +1949,185 @@ fn open_install_folder(app: AppHandle, request: LaunchRequest) -> Result<(), Str
     open::that(folder).map_err(|err| err.to_string())
 }
 
+fn agent_control_root(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app_data_dir(app)?.join("agent-control"))
+}
+
+fn agent_control_layout(app: &AppHandle) -> Result<(AgentControlInfo, PathBuf, PathBuf, PathBuf, PathBuf), String> {
+    let root = agent_control_root(app)?;
+    let inbox = root.join("inbox");
+    let outbox = root.join("outbox");
+    let history = root.join("history");
+    let state_path = root.join("state.json");
+    fs::create_dir_all(&inbox).map_err(|err| err.to_string())?;
+    fs::create_dir_all(&outbox).map_err(|err| err.to_string())?;
+    fs::create_dir_all(&history).map_err(|err| err.to_string())?;
+    let info = AgentControlInfo {
+        root_dir: root.to_string_lossy().to_string(),
+        inbox_dir: inbox.to_string_lossy().to_string(),
+        outbox_dir: outbox.to_string_lossy().to_string(),
+        history_dir: history.to_string_lossy().to_string(),
+        state_path: state_path.to_string_lossy().to_string(),
+    };
+    Ok((info, inbox, outbox, history, state_path))
+}
+
+fn write_agent_control_state(path: &Path, apps: &[LauncherApp]) -> Result<(), String> {
+    let value = serde_json::json!({
+        "updatedAt": Utc::now().to_rfc3339(),
+        "apps": apps,
+    });
+    write_json_file(path, &value)
+}
+
+fn agent_response_file_name(command_path: &Path) -> String {
+    let stem = command_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("command");
+    format!("{stem}.result.json")
+}
+
+fn agent_history_file_name(command_path: &Path) -> String {
+    let stem = command_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("command");
+    format!("{}-{stem}.json", Utc::now().format("%Y%m%dT%H%M%S%.3fZ"))
+}
+
+fn require_agent_app_id(command: &AgentControlCommand) -> Result<String, String> {
+    command
+        .app_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "Command requires appId.".to_string())
+}
+
+async fn execute_agent_control_command(app: AppHandle, command: &AgentControlCommand) -> Result<serde_json::Value, String> {
+    match command.action.clone() {
+        AgentControlAction::Status => {
+            let apps = read_apps(&app);
+            Ok(serde_json::json!({ "apps": apps }))
+        }
+        AgentControlAction::Scan => {
+            let apps = scan_releases(app).await?;
+            Ok(serde_json::json!({ "apps": apps }))
+        }
+        AgentControlAction::Download | AgentControlAction::Update => {
+            let app_id = require_agent_app_id(command)?;
+            let result = download_release(
+                app,
+                DownloadRequest {
+                    app_id,
+                    version: command.version.clone(),
+                    package_preference: command.package_preference.clone(),
+                },
+            )
+            .await?;
+            serde_json::to_value(result).map_err(|err| err.to_string())
+        }
+        AgentControlAction::Launch => {
+            let app_id = require_agent_app_id(command)?;
+            launch_app(app, LaunchRequest { app_id })?;
+            Ok(serde_json::json!({ "launched": true }))
+        }
+        AgentControlAction::OpenFolder => {
+            let app_id = require_agent_app_id(command)?;
+            open_install_folder(app, LaunchRequest { app_id })?;
+            Ok(serde_json::json!({ "opened": true }))
+        }
+    }
+}
+
+#[tauri::command]
+fn get_agent_control_info(app: AppHandle) -> Result<AgentControlInfo, String> {
+    let (info, _, _, _, state_path) = agent_control_layout(&app)?;
+    let apps = read_apps(&app);
+    write_agent_control_state(&state_path, &apps)?;
+    Ok(info)
+}
+
+#[tauri::command]
+async fn process_agent_control_commands(app: AppHandle) -> Result<AgentControlPollResult, String> {
+    let (info, inbox, outbox, history, state_path) = agent_control_layout(&app)?;
+    let mut command_paths = Vec::new();
+
+    for entry in fs::read_dir(&inbox).map_err(|err| err.to_string())? {
+        let entry = entry.map_err(|err| err.to_string())?;
+        let path = entry.path();
+        if path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+        {
+            command_paths.push(path);
+        }
+    }
+
+    command_paths.sort();
+    let mut processed_count = 0usize;
+
+    for command_path in command_paths {
+        let raw = fs::read_to_string(&command_path).map_err(|err| err.to_string())?;
+        let parsed = serde_json::from_str::<AgentControlCommand>(&raw);
+        let processed_at = Utc::now().to_rfc3339();
+        let response = match parsed {
+            Ok(command) => {
+                let result = execute_agent_control_command(app.clone(), &command).await;
+                match result {
+                    Ok(data) => AgentControlResponse {
+                        id: command.id,
+                        action: Some(command.action),
+                        app_id: command.app_id,
+                        ok: true,
+                        message: "OK".to_string(),
+                        processed_at,
+                        data,
+                    },
+                    Err(error) => AgentControlResponse {
+                        id: command.id,
+                        action: Some(command.action),
+                        app_id: command.app_id,
+                        ok: false,
+                        message: error,
+                        processed_at,
+                        data: serde_json::Value::Null,
+                    },
+                }
+            }
+            Err(error) => AgentControlResponse {
+                id: None,
+                action: None,
+                app_id: None,
+                ok: false,
+                message: format!("Invalid command JSON: {error}"),
+                processed_at,
+                data: serde_json::Value::Null,
+            },
+        };
+
+        let response_path = outbox.join(agent_response_file_name(&command_path));
+        write_json_file(&response_path, &response)?;
+        let history_path = history.join(agent_history_file_name(&command_path));
+        let _ = fs::rename(&command_path, &history_path).or_else(|_| {
+            fs::copy(&command_path, &history_path)?;
+            fs::remove_file(&command_path)
+        });
+        processed_count += 1;
+    }
+
+    let apps = read_apps(&app);
+    write_agent_control_state(&state_path, &apps)?;
+    Ok(AgentControlPollResult {
+        processed_count,
+        apps,
+        info,
+    })
+}
+
 #[tauri::command]
 async fn scan_releases(app: AppHandle) -> Result<Vec<LauncherApp>, String> {
     let _ = refresh_tools_catalog(app.clone()).await;
@@ -2095,6 +2332,8 @@ fn main() {
             open_control_center_release,
             install_control_center_update,
             open_install_folder,
+            get_agent_control_info,
+            process_agent_control_commands,
             scan_releases,
             download_release,
         ])
