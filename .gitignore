@@ -23,6 +23,7 @@ yarn-error.log*
 
 # Local-only publish helpers with machine/server details
 scripts/*.local.ps1
+uploadToolsJSON.bat
 
 # OS/editor files
 .DS_Store
