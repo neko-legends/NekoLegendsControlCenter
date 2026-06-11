@@ -92,6 +92,35 @@ type AgentControlPollResult = {
   info: AgentControlInfo
 }
 
+type AgentApiRegistryEntry = {
+  appId: string
+  appName: string
+  defaultPort: number
+  bindAddress: string
+  port: number
+  enabled: boolean
+  url: string
+  openapiUrl: string
+  busy: boolean
+  activeJobId: string | null
+  lastSeen: string | null
+  note: string | null
+}
+
+type AgentApiPortConflict = {
+  port: number
+  appIds: string[]
+  appNames: string[]
+}
+
+type AgentApiDashboard = {
+  registryPath: string
+  updatedAt: string
+  apps: AgentApiRegistryEntry[]
+  conflicts: AgentApiPortConflict[]
+  nextAvailablePort: number
+}
+
 type Theme = {
   id: ThemeId
   name: string
@@ -116,10 +145,13 @@ const fallbackState: ControlCenterState = {
   dataDir: '',
   apps: [
     app('batchlapse', 'BatchLapse', 'BatchLapse', 'Batch video timelapse exporter for MP4, WebM, and GitHub-friendly GIFs.', '#5b8def', 'BL', 'Work Stuff'),
+    app('cutscene-converter', 'Cutscene Converter', 'CutsceneConverter', 'Godot-friendly cutscene video converter for MP4, WebM, and OGV.', '#f06f48', 'CC', 'Work Stuff'),
     app('depth-map-ai-generator', 'DepthMap AI', 'DepthMapAIGenerator', 'Batch depth-map and WebP generator for local AI image workflows.', '#43b883', 'DM', 'Under Development', null, 'comingSoon'),
     app('image-to-ascii-3d', 'ASCII 3D', 'ImageToASCII3D', 'Image-to-ASCII converter with optional depth-map driven 3D parallax exports.', '#f0a848', 'A3', 'Under Development', null, 'comingSoon'),
+    app('image-to-hunyuan-3d', 'Hunyuan 3D', 'ImageToHunyuan3D', 'Local image-to-3D workflow for Hunyuan mesh and texture generation.', '#8c65df', 'H3', 'Under Development'),
     app('markrush', 'MarkRush', 'MarkRush', 'Fast local Markdown viewer/editor built for huge files and folders.', '#e05d7b', 'MR', 'Work Stuff'),
     app('opensplit', 'OpenSplit', 'OpenSplit', 'Multi-pane terminal harness for AI coding agents, shells, and SSH sessions.', '#4fb6d8', 'OS', 'Work Stuff'),
+    app('seamless-image-edit', 'Seamless Image Edit', 'SeamlessImageEdit', 'Local image tiling and seamless texture prep for game art workflows.', '#d889ff', 'SI', 'Work Stuff'),
     app('venice-media-local', 'Venice Media', 'VeniceMediaLocal', 'Local Venice API media workspace for images, video, music, voice, and cleanup.', '#34c6a3', 'VM', 'Work Stuff'),
     app('purpleplanet', 'PurplePlanet', 'PurplePlanet', 'Luminous Three.js planet motion art for live wallpapers and screensavers.', '#8c65df', 'PP', 'Fun Stuff', 'https://nekolegends.com/res/projects/purplePlanet/'),
     app('stargaze', 'StarGaze', 'StarGaze', 'Glittering Three.js starfield wallpaper and screensaver with tunable motion.', '#6b7cff', 'SG', 'Fun Stuff', 'https://nekolegends.com/res/projects/starGaze/'),
@@ -170,6 +202,15 @@ function formatCheckedAt(value: string | null): string {
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return 'Checked'
   return parsed.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+}
+
+function normalizePort(value: string): number | null {
+  const port = Number(value)
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null
+}
+
+function conflictForPort(dashboard: AgentApiDashboard | null, port: number): AgentApiPortConflict | null {
+  return dashboard?.conflicts.find((conflict) => conflict.port === port) ?? null
 }
 
 function versionNumberParts(version: string | null): number[] {
@@ -408,6 +449,8 @@ export default function App() {
   const [controlCenterUpdating, setControlCenterUpdating] = useState(false)
   const [agentControlEnabled, setAgentControlEnabled] = useState(false)
   const [agentControlInfo, setAgentControlInfo] = useState<AgentControlInfo | null>(null)
+  const [agentApiDashboard, setAgentApiDashboard] = useState<AgentApiDashboard | null>(null)
+  const [agentApiPortEdits, setAgentApiPortEdits] = useState<Record<string, string>>({})
   const draggedItemRef = useRef<DragItem | null>(null)
   const pointerDragRef = useRef<PointerDrag | null>(null)
   const dragListenersRef = useRef<DragListeners | null>(null)
@@ -438,6 +481,7 @@ export default function App() {
     () => contextMenu ? state.apps.find((candidate) => candidate.id === contextMenu.appId) ?? null : null,
     [contextMenu, state.apps],
   )
+  const agentApiConflictCount = agentApiDashboard?.conflicts.length ?? 0
 
   appsRef.current = state.apps
   categoriesRef.current = layoutCategories
@@ -470,6 +514,7 @@ export default function App() {
   useEffect(() => {
     void loadState()
     void checkControlCenterUpdate(false)
+    void refreshAgentApiDashboard()
   }, [])
 
   useEffect(() => {
@@ -557,6 +602,44 @@ export default function App() {
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error))
     }
+  }
+
+  async function refreshAgentApiDashboard() {
+    if (!isTauriRuntime()) return
+    try {
+      const dashboard = await call<AgentApiDashboard>('get_agent_api_dashboard')
+      setAgentApiDashboard(dashboard)
+      setAgentApiPortEdits(
+        Object.fromEntries(dashboard.apps.map((entry) => [entry.appId, String(entry.port)])),
+      )
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async function saveAgentApiPort(appId: string, value: string) {
+    const port = normalizePort(value)
+    if (port === null) {
+      setNotice('Choose a port between 1 and 65535.')
+      return
+    }
+
+    try {
+      const dashboard = await call<AgentApiDashboard>('save_agent_api_port', { request: { appId, port } })
+      setAgentApiDashboard(dashboard)
+      setAgentApiPortEdits(
+        Object.fromEntries(dashboard.apps.map((entry) => [entry.appId, String(entry.port)])),
+      )
+      const conflict = conflictForPort(dashboard, port)
+      setNotice(conflict ? `Port ${port} is assigned to ${conflict.appNames.length} apps` : `Agent API port saved: ${port}`)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async function assignNextAgentApiPort(appId: string) {
+    if (!agentApiDashboard) return
+    await saveAgentApiPort(appId, String(agentApiDashboard.nextAvailablePort))
   }
 
   async function scanForUpdates() {
@@ -1529,6 +1612,56 @@ export default function App() {
                 <Plus size={14} />
                 <span>Category</span>
               </button>
+            </div>
+            <div className="agent-api-panel" aria-label="Agent API ports">
+              <div className="agent-api-heading">
+                <strong>Agent APIs</strong>
+                <span>{agentApiConflictCount > 0 ? `${agentApiConflictCount} conflict${agentApiConflictCount === 1 ? '' : 's'}` : 'Ports clear'}</span>
+                <button type="button" onClick={() => void refreshAgentApiDashboard()} title={agentApiDashboard?.registryPath ?? 'Refresh Agent API registry'}>
+                  <RefreshCw size={13} />
+                </button>
+              </div>
+              <div className="agent-api-list">
+                {(agentApiDashboard?.apps ?? []).map((entry) => {
+                  const conflict = conflictForPort(agentApiDashboard, entry.port)
+                  const portValue = agentApiPortEdits[entry.appId] ?? String(entry.port)
+                  return (
+                    <div className={classNames('agent-api-row', conflict && 'conflict')} key={entry.appId}>
+                      <div className="agent-api-name">
+                        <strong>{entry.appName}</strong>
+                        <span>{entry.enabled ? (entry.busy ? 'Busy' : 'On') : 'Off'}</span>
+                      </div>
+                      <label className="agent-api-port">
+                        <span>Port</span>
+                        <input
+                          type="number"
+                          min="1"
+                          max="65535"
+                          value={portValue}
+                          onChange={(event) => setAgentApiPortEdits((current) => ({ ...current, [entry.appId]: event.currentTarget.value }))}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              void saveAgentApiPort(entry.appId, portValue)
+                            }
+                          }}
+                        />
+                      </label>
+                      <div className="agent-api-url" title={entry.openapiUrl}>
+                        <span>{entry.url}</span>
+                        {conflict ? <small>{conflict.appNames.join(', ')}</small> : <small>Default {entry.defaultPort}</small>}
+                      </div>
+                      <div className="agent-api-actions">
+                        <button type="button" onClick={() => void saveAgentApiPort(entry.appId, portValue)} title={`Save ${entry.appName} port`}>
+                          Save
+                        </button>
+                        <button type="button" onClick={() => void assignNextAgentApiPort(entry.appId)} title={`Use ${agentApiDashboard?.nextAvailablePort ?? 'next free port'}`}>
+                          Next
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
             </div>
           </div>
           <div className="settings-actions">

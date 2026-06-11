@@ -539,6 +539,148 @@ button {
   padding: 0 9px;
 }
 
+.agent-api-panel {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding-top: 2px;
+}
+
+.agent-api-heading,
+.agent-api-row,
+.agent-api-name,
+.agent-api-port,
+.agent-api-actions {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.agent-api-heading {
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.agent-api-heading strong {
+  color: var(--accent-2);
+}
+
+.agent-api-heading button {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.agent-api-list {
+  display: grid;
+  gap: 5px;
+  max-height: 150px;
+  min-width: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.agent-api-row {
+  display: grid;
+  grid-template-columns: minmax(126px, 1.1fr) minmax(84px, 0.55fr) minmax(160px, 1.35fr) auto;
+  gap: 7px;
+  min-height: 38px;
+  padding: 5px 6px;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-2) 78%, transparent);
+}
+
+.agent-api-row.conflict {
+  border-color: var(--danger);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 32%, transparent);
+}
+
+.agent-api-name {
+  gap: 6px;
+}
+
+.agent-api-name strong,
+.agent-api-url span,
+.agent-api-url small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-api-name strong {
+  font-size: 12px;
+}
+
+.agent-api-name span {
+  flex: 0 0 auto;
+  color: var(--accent-2);
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.agent-api-port {
+  gap: 5px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.agent-api-port input {
+  width: 76px;
+  min-height: 28px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.agent-api-url {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.agent-api-url small {
+  color: color-mix(in srgb, var(--accent-2) 68%, var(--muted));
+}
+
+.agent-api-actions {
+  gap: 5px;
+  justify-content: end;
+}
+
+.agent-api-actions button {
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.agent-api-actions button:hover {
+  border-color: var(--accent);
+  color: var(--accent-2);
+}
+
 .app-toggle {
   display: inline-grid;
   place-items: center;

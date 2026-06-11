@@ -3,6 +3,7 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     fs,
     io,
     path::{Path, PathBuf},
@@ -22,6 +23,7 @@ const TOOLS_CATALOG_URL: &str = "https://nekolegends.com/res/nekoLegendsControlC
 const UNDER_DEVELOPMENT_CATEGORY: &str = "Under Development";
 const VENICE_MEDIA_LOCAL_ID: &str = "venice-media-local";
 const VENICE_MEDIA_LOCAL_DISPLAY_NAME: &str = "Venice Media Local";
+const AGENT_API_REGISTRY_FILE: &str = "agent-api-registry.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -236,6 +238,55 @@ struct AgentControlPollResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct AgentApiRegistryEntry {
+    app_id: String,
+    app_name: String,
+    default_port: u16,
+    bind_address: String,
+    port: u16,
+    enabled: bool,
+    url: String,
+    openapi_url: String,
+    busy: bool,
+    active_job_id: Option<String>,
+    last_seen: Option<String>,
+    note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentApiRegistry {
+    updated_at: String,
+    apps: Vec<AgentApiRegistryEntry>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentApiPortConflict {
+    port: u16,
+    app_ids: Vec<String>,
+    app_names: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentApiDashboard {
+    registry_path: String,
+    updated_at: String,
+    apps: Vec<AgentApiRegistryEntry>,
+    conflicts: Vec<AgentApiPortConflict>,
+    next_available_port: u16,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveAgentApiPortRequest {
+    app_id: String,
+    port: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ControlCenterUpdate {
     current_version: String,
     latest_version: Option<String>,
@@ -292,10 +343,13 @@ fn normalize_categories(categories: Vec<String>) -> Vec<String> {
 fn default_apps() -> Vec<LauncherApp> {
     vec![
         app("batchlapse", "BatchLapse", "BatchLapse", "Batch video timelapse exporter for MP4, WebM, and GitHub-friendly GIFs.", "#5b8def", "BL", "Work Stuff", ToolStatus::Available, None),
+        app("cutscene-converter", "Cutscene Converter", "CutsceneConverter", "Godot-friendly cutscene video converter for MP4, WebM, and OGV.", "#f06f48", "CC", "Work Stuff", ToolStatus::Available, None),
         app("depth-map-ai-generator", "DepthMap AI", "DepthMapAIGenerator", "Batch depth-map and WebP generator for local AI image workflows.", "#43b883", "DM", UNDER_DEVELOPMENT_CATEGORY, ToolStatus::ComingSoon, None),
         app("image-to-ascii-3d", "ASCII 3D", "ImageToASCII3D", "Image-to-ASCII converter with optional depth-map driven 3D parallax exports.", "#f0a848", "A3", UNDER_DEVELOPMENT_CATEGORY, ToolStatus::ComingSoon, None),
+        app("image-to-hunyuan-3d", "Hunyuan 3D", "ImageToHunyuan3D", "Local image-to-3D workflow for Hunyuan mesh and texture generation.", "#8c65df", "H3", UNDER_DEVELOPMENT_CATEGORY, ToolStatus::Available, None),
         app("markrush", "MarkRush", "MarkRush", "Fast local Markdown viewer/editor built for huge files and folders.", "#e05d7b", "MR", "Work Stuff", ToolStatus::Available, None),
         app("opensplit", "OpenSplit", "OpenSplit", "Multi-pane terminal harness for AI coding agents, shells, and SSH sessions.", "#4fb6d8", "OS", "Work Stuff", ToolStatus::Available, None),
+        app("seamless-image-edit", "Seamless Image Edit", "SeamlessImageEdit", "Local image tiling and seamless texture prep for game art workflows.", "#d889ff", "SI", "Work Stuff", ToolStatus::Available, None),
         app("venice-media-local", "Venice Media", "VeniceMediaLocal", "Local Venice API media workspace for images, video, music, voice, and cleanup.", "#34c6a3", "VM", "Work Stuff", ToolStatus::Available, None),
         app("purpleplanet", "PurplePlanet", "PurplePlanet", "Luminous Three.js planet motion art for live wallpapers and screensavers.", "#8c65df", "PP", "Fun Stuff", ToolStatus::Available, Some("https://nekolegends.com/res/projects/purplePlanet/")),
         app("stargaze", "StarGaze", "StarGaze", "Glittering Three.js starfield wallpaper and screensaver with tunable motion.", "#6b7cff", "SG", "Fun Stuff", ToolStatus::Available, Some("https://nekolegends.com/res/projects/starGaze/")),
@@ -344,6 +398,31 @@ fn tools_catalog_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app_data_dir(app)?.join("tools-catalog.json"))
 }
 
+fn shared_neko_legends_dir() -> Result<PathBuf, String> {
+    let base = if cfg!(target_os = "windows") {
+        std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+    } else if cfg!(target_os = "macos") {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join("Library").join("Application Support"))
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+    }
+    .ok_or_else(|| "Unable to resolve user data folder.".to_string())?;
+
+    let dir = base.join("NekoLegends");
+    fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    Ok(dir)
+}
+
+fn agent_api_registry_path() -> Result<PathBuf, String> {
+    Ok(shared_neko_legends_dir()?.join(AGENT_API_REGISTRY_FILE))
+}
+
 fn read_json_file<T>(path: &Path, fallback: T) -> T
 where
     T: for<'de> Deserialize<'de>,
@@ -363,6 +442,179 @@ where
     }
     let raw = serde_json::to_string_pretty(value).map_err(|err| err.to_string())?;
     fs::write(path, raw).map_err(|err| err.to_string())
+}
+
+fn agent_api_url(bind_address: &str, port: u16) -> String {
+    let host = if bind_address == "0.0.0.0" {
+        "127.0.0.1"
+    } else {
+        bind_address
+    };
+    format!("http://{host}:{port}")
+}
+
+fn default_agent_api_entry(
+    app_id: &str,
+    app_name: &str,
+    default_port: u16,
+    bind_address: &str,
+    note: &str,
+) -> AgentApiRegistryEntry {
+    let url = agent_api_url(bind_address, default_port);
+    AgentApiRegistryEntry {
+        app_id: app_id.to_string(),
+        app_name: app_name.to_string(),
+        default_port,
+        bind_address: bind_address.to_string(),
+        port: default_port,
+        enabled: false,
+        url: url.clone(),
+        openapi_url: format!("{url}/openapi.json"),
+        busy: false,
+        active_job_id: None,
+        last_seen: None,
+        note: Some(note.to_string()),
+    }
+}
+
+fn default_agent_api_entries() -> Vec<AgentApiRegistryEntry> {
+    vec![
+        default_agent_api_entry(
+            "venice-media-local",
+            "Venice Media Local",
+            9876,
+            "0.0.0.0",
+            "Remote-control API with token flow.",
+        ),
+        default_agent_api_entry(
+            "image-to-hunyuan-3d",
+            "ImageToHunyuan3D",
+            17333,
+            "127.0.0.1",
+            "Local Agent API.",
+        ),
+        default_agent_api_entry(
+            "depth-map-ai-generator",
+            "DepthMap AI Generator",
+            17334,
+            "127.0.0.1",
+            "Local Agent API.",
+        ),
+        default_agent_api_entry(
+            "seamless-image-edit",
+            "Seamless Image Edit",
+            17335,
+            "127.0.0.1",
+            "Local Agent API.",
+        ),
+        default_agent_api_entry(
+            "batchlapse",
+            "BatchLapse",
+            17336,
+            "127.0.0.1",
+            "Local Agent API.",
+        ),
+        default_agent_api_entry(
+            "cutscene-converter",
+            "Cutscene Converter",
+            17337,
+            "127.0.0.1",
+            "Local Agent API.",
+        ),
+    ]
+}
+
+fn read_agent_api_registry() -> Result<AgentApiRegistry, String> {
+    let path = agent_api_registry_path()?;
+    let fallback = AgentApiRegistry {
+        updated_at: Utc::now().to_rfc3339(),
+        apps: Vec::new(),
+    };
+    Ok(read_json_file(&path, fallback))
+}
+
+fn merged_agent_api_entries(registry: &AgentApiRegistry) -> Vec<AgentApiRegistryEntry> {
+    let mut entries = default_agent_api_entries();
+
+    for saved in &registry.apps {
+        if let Some(existing) = entries
+            .iter_mut()
+            .find(|entry| entry.app_id == saved.app_id)
+        {
+            let mut merged = saved.clone();
+            merged.app_name = if merged.app_name.trim().is_empty() {
+                existing.app_name.clone()
+            } else {
+                merged.app_name
+            };
+            merged.default_port = existing.default_port;
+            merged.bind_address = if merged.bind_address.trim().is_empty() {
+                existing.bind_address.clone()
+            } else {
+                merged.bind_address
+            };
+            merged.url = agent_api_url(&merged.bind_address, merged.port);
+            merged.openapi_url = format!("{}/openapi.json", merged.url);
+            if merged.note.is_none() {
+                merged.note = existing.note.clone();
+            }
+            *existing = merged;
+        } else {
+            entries.push(saved.clone());
+        }
+    }
+
+    entries.sort_by_key(|entry| entry.default_port);
+    entries
+}
+
+fn agent_api_conflicts(entries: &[AgentApiRegistryEntry]) -> Vec<AgentApiPortConflict> {
+    let mut by_port: BTreeMap<u16, Vec<&AgentApiRegistryEntry>> = BTreeMap::new();
+    for entry in entries {
+        by_port.entry(entry.port).or_default().push(entry);
+    }
+    by_port
+        .into_iter()
+        .filter_map(|(port, matches)| {
+            if matches.len() < 2 {
+                return None;
+            }
+            Some(AgentApiPortConflict {
+                port,
+                app_ids: matches.iter().map(|entry| entry.app_id.clone()).collect(),
+                app_names: matches.iter().map(|entry| entry.app_name.clone()).collect(),
+            })
+        })
+        .collect()
+}
+
+fn next_available_agent_port(entries: &[AgentApiRegistryEntry]) -> u16 {
+    let used = entries.iter().map(|entry| entry.port).collect::<Vec<_>>();
+    (17333..=17499)
+        .find(|port| !used.contains(port))
+        .unwrap_or(17500)
+}
+
+fn write_agent_api_registry(entries: Vec<AgentApiRegistryEntry>) -> Result<AgentApiRegistry, String> {
+    let registry = AgentApiRegistry {
+        updated_at: Utc::now().to_rfc3339(),
+        apps: entries,
+    };
+    write_json_file(&agent_api_registry_path()?, &registry)?;
+    Ok(registry)
+}
+
+fn agent_api_dashboard_from(registry: AgentApiRegistry) -> Result<AgentApiDashboard, String> {
+    let entries = merged_agent_api_entries(&registry);
+    let conflicts = agent_api_conflicts(&entries);
+    let next_available_port = next_available_agent_port(&entries);
+    Ok(AgentApiDashboard {
+        registry_path: agent_api_registry_path()?.to_string_lossy().to_string(),
+        updated_at: registry.updated_at,
+        apps: entries,
+        conflicts,
+        next_available_port,
+    })
 }
 
 fn builtin_tools_catalog() -> ToolsCatalog {
@@ -2051,6 +2303,32 @@ fn get_agent_control_info(app: AppHandle) -> Result<AgentControlInfo, String> {
 }
 
 #[tauri::command]
+fn get_agent_api_dashboard() -> Result<AgentApiDashboard, String> {
+    agent_api_dashboard_from(read_agent_api_registry()?)
+}
+
+#[tauri::command]
+fn save_agent_api_port(request: SaveAgentApiPortRequest) -> Result<AgentApiDashboard, String> {
+    if request.port == 0 {
+        return Err("Agent API port must be between 1 and 65535.".to_string());
+    }
+
+    let registry = read_agent_api_registry()?;
+    let mut entries = merged_agent_api_entries(&registry);
+    let entry = entries
+        .iter_mut()
+        .find(|entry| entry.app_id == request.app_id)
+        .ok_or_else(|| "Agent API app was not found.".to_string())?;
+    entry.port = request.port;
+    entry.url = agent_api_url(&entry.bind_address, entry.port);
+    entry.openapi_url = format!("{}/openapi.json", entry.url);
+    entry.last_seen = Some(Utc::now().to_rfc3339());
+
+    let registry = write_agent_api_registry(entries)?;
+    agent_api_dashboard_from(registry)
+}
+
+#[tauri::command]
 async fn process_agent_control_commands(app: AppHandle) -> Result<AgentControlPollResult, String> {
     let (info, inbox, outbox, history, state_path) = agent_control_layout(&app)?;
     let mut command_paths = Vec::new();
@@ -2333,6 +2611,8 @@ fn main() {
             install_control_center_update,
             open_install_folder,
             get_agent_control_info,
+            get_agent_api_dashboard,
+            save_agent_api_port,
             process_agent_control_commands,
             scan_releases,
             download_release,
