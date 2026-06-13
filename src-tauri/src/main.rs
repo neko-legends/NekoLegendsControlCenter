@@ -4,10 +4,12 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    fs,
-    io,
+    fs::{self, OpenOptions},
+    io::{self, ErrorKind},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    thread,
+    time::Duration,
 };
 use tauri::{AppHandle, Manager, PhysicalSize, Size, WebviewWindow, WindowEvent};
 #[cfg(windows)]
@@ -310,11 +312,37 @@ fn default_true() -> bool {
 }
 
 fn default_catalog_version() -> u32 {
-    3
+    7
 }
 
 fn default_category() -> String {
     "Work Stuff".to_string()
+}
+
+fn is_under_development_category(category: &str) -> bool {
+    category
+        .trim()
+        .eq_ignore_ascii_case(UNDER_DEVELOPMENT_CATEGORY)
+}
+
+fn is_coming_soon_app(launcher_app: &LauncherApp) -> bool {
+    launcher_app.status == ToolStatus::ComingSoon
+        || is_under_development_category(&launcher_app.category)
+}
+
+fn normalize_development_status(launcher_app: &mut LauncherApp) {
+    if is_coming_soon_app(launcher_app) {
+        launcher_app.status = ToolStatus::ComingSoon;
+        launcher_app.category = UNDER_DEVELOPMENT_CATEGORY.to_string();
+    }
+}
+
+fn clear_coming_soon_release_state(launcher_app: &mut LauncherApp) {
+    launcher_app.latest_version = None;
+    launcher_app.release_url = None;
+    launcher_app.release_checked_at = None;
+    launcher_app.release_notes = Some("Coming soon.".to_string());
+    launcher_app.release_options = Vec::new();
 }
 
 fn default_categories() -> Vec<String> {
@@ -342,6 +370,7 @@ fn normalize_categories(categories: Vec<String>) -> Vec<String> {
 
 fn default_apps() -> Vec<LauncherApp> {
     vec![
+        app("asset-vault", "Asset Vault", "AssetVault", "Local-first library for AI-generated game assets: import, triage, dedupe, search, export.", "#c9a04e", "AV", "Work Stuff", ToolStatus::ComingSoon, None),
         app("batchlapse", "BatchLapse", "BatchLapse", "Batch video timelapse exporter for MP4, WebM, and GitHub-friendly GIFs.", "#5b8def", "BL", "Work Stuff", ToolStatus::Available, None),
         app("cutscene-converter", "Cutscene Converter", "CutsceneConverter", "Godot-friendly cutscene video converter for MP4, WebM, and OGV.", "#f06f48", "CC", "Work Stuff", ToolStatus::Available, None),
         app("depth-map-ai-generator", "DepthMap AI", "DepthMapAIGenerator", "Batch depth-map and WebP generator for local AI image workflows.", "#43b883", "DM", UNDER_DEVELOPMENT_CATEGORY, ToolStatus::ComingSoon, None),
@@ -521,6 +550,20 @@ fn default_agent_api_entries() -> Vec<AgentApiRegistryEntry> {
             "127.0.0.1",
             "Local Agent API.",
         ),
+        default_agent_api_entry(
+            "asset-vault",
+            "Asset Vault",
+            17338,
+            "127.0.0.1",
+            "Library/search API.",
+        ),
+        default_agent_api_entry(
+            "sprite-atlas-packer",
+            "Sprite Atlas Packer",
+            9877,
+            "127.0.0.1",
+            "Pack/slice control API.",
+        ),
     ]
 }
 
@@ -600,8 +643,47 @@ fn write_agent_api_registry(entries: Vec<AgentApiRegistryEntry>) -> Result<Agent
         updated_at: Utc::now().to_rfc3339(),
         apps: entries,
     };
-    write_json_file(&agent_api_registry_path()?, &registry)?;
+    let path = agent_api_registry_path()?;
+    with_agent_api_registry_lock(&path, || write_json_file(&path, &registry))?;
     Ok(registry)
+}
+
+fn with_agent_api_registry_lock<F>(path: &Path, mut write: F) -> Result<(), String>
+where
+    F: FnMut() -> Result<(), String>,
+{
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    let lock_path = path.with_extension("json.lock");
+    for _ in 0..3 {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(_) => {
+                let result = write();
+                let _ = fs::remove_file(&lock_path);
+                return result;
+            }
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+                let stale = fs::metadata(&lock_path)
+                    .and_then(|metadata| metadata.modified())
+                    .ok()
+                    .and_then(|modified| modified.elapsed().ok())
+                    .map(|elapsed| elapsed > Duration::from_secs(2))
+                    .unwrap_or(false);
+                if stale {
+                    let _ = fs::remove_file(&lock_path);
+                } else {
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+            Err(err) => return Err(err.to_string()),
+        }
+    }
+    Err("Agent API registry is busy.".to_string())
 }
 
 fn agent_api_dashboard_from(registry: AgentApiRegistry) -> Result<AgentApiDashboard, String> {
@@ -709,9 +791,7 @@ fn clean_catalog_tool(mut launcher_app: LauncherApp) -> Option<LauncherApp> {
             .to_ascii_uppercase();
     }
     launcher_app.category = default_category_if_empty(&launcher_app.category);
-    if launcher_app.status == ToolStatus::ComingSoon {
-        launcher_app.category = UNDER_DEVELOPMENT_CATEGORY.to_string();
-    }
+    normalize_development_status(&mut launcher_app);
     launcher_app.demo_url = clean_optional_https_url(launcher_app.demo_url);
     launcher_app.executable_path = None;
     launcher_app.installed_version = None;
@@ -832,22 +912,23 @@ fn merge_catalog_apps(saved: Vec<LauncherApp>, defaults: Vec<LauncherApp>) -> Ve
             app.package_preference = saved_app.package_preference;
             app.package_path = saved_app.package_path;
             app.visible = saved_app.visible;
-            if app.status == ToolStatus::ComingSoon {
-                app.latest_version = None;
-                app.release_url = None;
-                app.release_checked_at = None;
-                app.release_notes = Some("Coming soon.".to_string());
-                app.release_options = Vec::new();
-            }
             if !saved_app.category.trim().is_empty() {
                 app.category = saved_app.category;
+            }
+            normalize_development_status(&mut app);
+            if app.status == ToolStatus::ComingSoon {
+                clear_coming_soon_release_state(&mut app);
             }
             merged.push(app);
         }
     }
 
-    for default_app in defaults {
+    for mut default_app in defaults {
         if !merged.iter().any(|candidate| candidate.id == default_app.id) {
+            normalize_development_status(&mut default_app);
+            if default_app.status == ToolStatus::ComingSoon {
+                clear_coming_soon_release_state(&mut default_app);
+            }
             merged.push(default_app);
         }
     }
@@ -2414,7 +2495,8 @@ async fn scan_releases(app: AppHandle) -> Result<Vec<LauncherApp>, String> {
     let checked_at = Utc::now().to_rfc3339();
 
     for launcher_app in apps.iter_mut() {
-        if launcher_app.status == ToolStatus::ComingSoon {
+        if is_coming_soon_app(launcher_app) {
+            normalize_development_status(launcher_app);
             launcher_app.latest_version = None;
             launcher_app.release_url = Some(format!(
                 "https://github.com/{}/{}/releases",
@@ -2464,7 +2546,7 @@ async fn download_release(
         .iter()
         .position(|candidate| candidate.id == request.app_id)
         .ok_or_else(|| "App was not found".to_string())?;
-    if apps[index].status == ToolStatus::ComingSoon {
+    if is_coming_soon_app(&apps[index]) {
         return Err(format!("{} is coming soon.", apps[index].name));
     }
     let repo = apps[index].repo.clone();

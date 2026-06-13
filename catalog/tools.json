@@ -1,7 +1,19 @@
 {
-  "catalogVersion": 4,
-  "updatedAt": "2026-06-10",
+  "catalogVersion": 7,
+  "updatedAt": "2026-06-12",
   "tools": [
+    {
+      "id": "asset-vault",
+      "name": "Asset Vault",
+      "repo": "AssetVault",
+      "description": "Local-first library for AI-generated game assets: import, triage, dedupe, search, export.",
+      "accent": "#c9a04e",
+      "icon": "AV",
+      "category": "Work Stuff",
+      "packagePreference": "portable",
+      "status": "comingSoon",
+      "visible": true
+    },
     {
       "id": "batchlapse",
       "name": "BatchLapse",
@@ -75,6 +87,18 @@
       "visible": true
     },
     {
+      "id": "palette-forge",
+      "name": "Palette Forge",
+      "repo": "PaletteForge",
+      "description": "Extract project palettes, remap assets, audit palette drift, and export engine-agnostic LUT/index textures.",
+      "accent": "#d75cff",
+      "icon": "PF",
+      "category": "Under Development",
+      "packagePreference": "portable",
+      "status": "comingSoon",
+      "visible": true
+    },
+    {
       "id": "seamless-image-edit",
       "name": "Seamless Image Edit",
       "repo": "SeamlessImageEdit",
@@ -84,6 +108,18 @@
       "category": "Work Stuff",
       "packagePreference": "portable",
       "status": "available",
+      "visible": true
+    },
+    {
+      "id": "sprite-atlas-packer",
+      "name": "Sprite Atlas Packer",
+      "repo": "SpriteAtlasPacker",
+      "description": "Turn loose sprite frames into deterministic TexturePacker-compatible PNG/WebP atlases.",
+      "accent": "#39a7ff",
+      "icon": "SA",
+      "category": "Under Development",
+      "packagePreference": "portable",
+      "status": "comingSoon",
       "visible": true
     },
     {
