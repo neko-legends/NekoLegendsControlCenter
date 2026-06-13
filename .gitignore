@@ -30,3 +30,11 @@ uploadToolsJSON.bat
 Thumbs.db
 .vscode/
 .idea/
+
+# Packaged app artifacts
+*.exe
+*.msi
+*.dmg
+*.zip
+*.7z
+*.tar.gz
