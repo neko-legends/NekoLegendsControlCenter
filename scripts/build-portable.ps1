@@ -4,7 +4,7 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $rootDir = Split-Path -Parent $scriptDir
 $targetDir = Join-Path $rootDir 'src-tauri\target-portable'
 $releaseDir = Join-Path $targetDir 'release'
-$portablePackageDir = Join-Path $rootDir 'release\NekoLegendsControlCenter'
+$portablePackageDir = Join-Path $rootDir 'release\portable'
 $cargoExe = (Get-Command cargo -ErrorAction SilentlyContinue).Source
 
 if (-not $cargoExe) {

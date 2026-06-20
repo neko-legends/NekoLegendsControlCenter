@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $rootDir = Split-Path -Parent $scriptDir
-$portableExe = Join-Path $rootDir 'release\NekoLegendsControlCenter\neko-legends-control-center-portable.exe'
+$portableExe = Join-Path $rootDir 'release\portable\neko-legends-control-center-portable.exe'
 
 if (-not (Test-Path -LiteralPath $portableExe)) {
   throw 'Portable app was not found. Run npm run build:portable first.'

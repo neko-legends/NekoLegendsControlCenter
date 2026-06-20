@@ -94,9 +94,9 @@ npm run build:portable
 
 The build script creates one portable app:
 
-- `release\NekoLegendsControlCenter\neko-legends-control-center-portable.exe`
+- `release\portable\neko-legends-control-center-portable.exe`
 
-The `release\NekoLegendsControlCenter` folder is the distribution-friendly portable package. Keep its `apps` and `catalog` folders beside `neko-legends-control-center-portable.exe`; downloaded apps install there by default, and local catalog testing reads from `catalog\tools.json`.
+The `release\portable` folder is the distribution-friendly portable package. Keep its `apps` and `catalog` folders beside `neko-legends-control-center-portable.exe`; downloaded apps install there by default, and local catalog testing reads from `catalog\tools.json`.
 
 To launch the current portable build:
 
@@ -104,7 +104,7 @@ To launch the current portable build:
 npm run run:portable
 ```
 
-The `src-tauri\target-*` folders are temporary build output. The `release\NekoLegendsControlCenter` folder is the only portable package to run or upload, and generated build output is intentionally ignored by Git.
+The `src-tauri\target-*` folders are temporary build output. The `release\portable` folder is the only portable package to run or upload, and generated build output is intentionally ignored by Git.
 
 ## Development
 
@@ -148,7 +148,7 @@ Start here when making changes:
 - `src\styles.css`: themes, layout, app tiles, context menus, detail panel, responsive behavior.
 - `src-tauri\src\main.rs`: app catalog defaults, saved state, GitHub release scanning, downloads, install detection, launching, demo/repo links, and self-update.
 - `catalog\tools.json`: master catalog intended for upload to `https://nekolegends.com/res/nekoLegendsControlCenter/tools.json`.
-- `scripts\build-portable.ps1`: portable build script that renames the Tauri exe and copies it into `release\NekoLegendsControlCenter`.
+- `scripts\build-portable.ps1`: portable build script that renames the Tauri exe and copies it into `release\portable`.
 - `AGENTS.md`: local file-based Agent control protocol for automation.
 
 Important source-of-truth details:
