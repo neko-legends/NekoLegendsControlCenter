@@ -542,6 +542,7 @@ export default function App() {
     [contextMenu, state.apps],
   )
   const agentApiConflictCount = agentApiDashboard?.conflicts.length ?? 0
+  const selectedAppUpdateAvailable = selectedApp ? isAppDownloaded(selectedApp) && versionStatus(selectedApp) === 'update' : false
 
   appsRef.current = state.apps
   categoriesRef.current = layoutCategories
@@ -896,14 +897,6 @@ export default function App() {
       window.open(`https://github.com/${githubOwner}/${appInfo.repo}`, '_blank', 'noopener')
       setNotice(error instanceof Error ? error.message : String(error))
     }
-  }
-
-  async function downloadLatest(appInfo: LauncherApp) {
-    if (isComingSoon(appInfo)) {
-      setNotice(`${appInfo.name} is coming soon`)
-      return
-    }
-    await downloadRelease(appInfo, selectedVersionFor(appInfo), true)
   }
 
   async function downloadRelease(appInfo: LauncherApp, version: string | null, manageBusy: boolean): Promise<boolean> {
@@ -2032,9 +2025,19 @@ export default function App() {
                 <FolderOpen size={17} />
                 Folder
               </button>
-              <button className="secondary-action" type="button" onClick={() => void downloadLatest(selectedApp)} disabled={busy || isComingSoon(selectedApp)}>
-                <Download size={17} />
-                Download
+              <button
+                className={selectedAppUpdateAvailable ? 'primary-action' : 'secondary-action'}
+                type="button"
+                onClick={() => void downloadRelease(
+                  selectedApp,
+                  selectedAppUpdateAvailable ? selectedApp.latestVersion ?? null : selectedVersionFor(selectedApp),
+                  true,
+                )}
+                disabled={busy || isComingSoon(selectedApp) || (selectedAppUpdateAvailable && !selectedApp.latestVersion)}
+                title={selectedAppUpdateAvailable ? `Update to ${selectedApp.latestVersion ?? 'the latest release'}` : 'Download selected release'}
+              >
+                {selectedAppUpdateAvailable ? <RefreshCw size={17} /> : <Download size={17} />}
+                {selectedAppUpdateAvailable ? 'Update' : 'Download'}
               </button>
               <button className="secondary-action" type="button" onClick={() => void openRelease(selectedApp)}>
                 <ExternalLink size={17} />

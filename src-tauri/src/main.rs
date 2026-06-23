@@ -21,6 +21,7 @@ const MIN_WINDOW_HEIGHT: u32 = 390;
 const FALLBACK_WINDOW_WIDTH: u32 = 720;
 const FALLBACK_WINDOW_HEIGHT: u32 = 520;
 const PORTRAIT_WINDOW_WIDTH_RATIO: f32 = 0.9;
+const WINDOW_SIZE_SAVE_DEBOUNCE_MS: u64 = 300;
 const GITHUB_OWNER: &str = "neko-legends";
 const CONTROL_CENTER_REPO: &str = "NekoLegendsControlCenter";
 const TOOLS_CATALOG_URL: &str = "https://nekolegends.com/res/nekoLegendsControlCenter/tools.json";
@@ -31,6 +32,13 @@ const AGENT_API_REGISTRY_FILE: &str = "agent-api-registry.json";
 const MAX_INSTALLED_APP_VERSIONS: usize = 2;
 
 static RUNNING_APPS: OnceLock<Mutex<BTreeMap<String, Child>>> = OnceLock::new();
+static WINDOW_SIZE_SAVE_STATE: OnceLock<Mutex<WindowSizeSaveState>> = OnceLock::new();
+
+#[derive(Default)]
+struct WindowSizeSaveState {
+    pending: Option<PhysicalSize<u32>>,
+    worker_active: bool,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2158,13 +2166,66 @@ fn apply_initial_window_size(app: &AppHandle, window: &WebviewWindow) -> Result<
 }
 
 fn persist_window_size(app: &AppHandle, size: PhysicalSize<u32>) -> Result<(), String> {
-    if size.width == 0 || size.height == 0 {
+    if size.width < MIN_WINDOW_WIDTH || size.height < MIN_WINDOW_HEIGHT {
         return Ok(());
     }
     let mut settings = read_settings(app);
     settings.window_width = Some(size.width);
     settings.window_height = Some(size.height);
     write_json_file(&settings_path(app)?, &settings)
+}
+
+fn queue_window_size_persist(app: AppHandle, size: PhysicalSize<u32>) {
+    if size.width < MIN_WINDOW_WIDTH || size.height < MIN_WINDOW_HEIGHT {
+        return;
+    }
+
+    let save_state =
+        WINDOW_SIZE_SAVE_STATE.get_or_init(|| Mutex::new(WindowSizeSaveState::default()));
+    let start_worker = match save_state.lock() {
+        Ok(mut state) => {
+            state.pending = Some(size);
+            if state.worker_active {
+                false
+            } else {
+                state.worker_active = true;
+                true
+            }
+        }
+        Err(error) => {
+            eprintln!("Failed to queue window size save: {error}");
+            false
+        }
+    };
+
+    if !start_worker {
+        return;
+    }
+
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_millis(WINDOW_SIZE_SAVE_DEBOUNCE_MS));
+        let next_size = match save_state.lock() {
+            Ok(mut state) => match state.pending.take() {
+                Some(size) => Some(size),
+                None => {
+                    state.worker_active = false;
+                    None
+                }
+            },
+            Err(error) => {
+                eprintln!("Failed to read queued window size: {error}");
+                return;
+            }
+        };
+
+        let Some(next_size) = next_size else {
+            break;
+        };
+
+        if let Err(error) = persist_window_size(&app, next_size) {
+            eprintln!("Failed to save window size: {error}");
+        }
+    });
 }
 
 #[tauri::command]
@@ -3192,9 +3253,7 @@ fn main() {
                 let resize_app = app_handle.clone();
                 window.on_window_event(move |event| {
                     if let WindowEvent::Resized(size) = event {
-                        if let Err(error) = persist_window_size(&resize_app, *size) {
-                            eprintln!("Failed to save window size: {error}");
-                        }
+                        queue_window_size_persist(resize_app.clone(), *size);
                     }
                 });
             }

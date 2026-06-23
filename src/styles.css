@@ -753,6 +753,8 @@ button {
   height: 100%;
   min-width: 0;
   min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
 }
 
 .category-row {
