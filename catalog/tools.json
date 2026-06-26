@@ -125,7 +125,7 @@
     {
       "id": "sprite-atlas-packer",
       "name": "Sprite Atlas Packer",
-      "repo": "SpriteAtlasPacker",
+      "repo": "sprite-atlas-packer",
       "description": "Turn loose sprite frames into deterministic TexturePacker-compatible PNG/WebP atlases.",
       "accent": "#39a7ff",
       "icon": "SA",
