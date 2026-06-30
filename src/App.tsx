@@ -156,6 +156,7 @@ const legacyReleasedWorkStuffCategory = 'Released Work Stuff'
 const funStuffCategory = 'Fun Stuff'
 const defaultCategories = [releasedToolsCategory, funStuffCategory, underDevelopmentCategory]
 const githubOwner = 'neko-legends'
+const bootReleaseScanMaxAgeMs = 12 * 60 * 60 * 1000
 
 const fallbackState: ControlCenterState = {
   settings: { theme: 'neko-tron', compactLabels: false, useRemoteCatalog: true, agentControlAutoStart: false, categories: defaultCategories },
@@ -313,8 +314,11 @@ function isUnderDevelopmentCategory(category: string): boolean {
   return category.trim().toLowerCase() === underDevelopmentCategory.toLowerCase()
 }
 
-function needsReleaseScan(appInfo: LauncherApp): boolean {
-  return !isComingSoon(appInfo) && !hasKnownRelease(appInfo)
+function needsBootReleaseScan(appInfo: LauncherApp, now = Date.now()): boolean {
+  if (!appInfo.releaseCheckedAt) return true
+  const checkedAt = new Date(appInfo.releaseCheckedAt).getTime()
+  if (Number.isNaN(checkedAt)) return true
+  return now - checkedAt > bootReleaseScanMaxAgeMs
 }
 
 function hasNoPublicRelease(appInfo: LauncherApp): boolean {
@@ -694,8 +698,9 @@ export default function App() {
       }
       const nextVisibleApps = nextState.apps.filter((candidate) => candidate.visible)
       setSelectedId((current) => nextVisibleApps.some((candidate) => candidate.id === current) ? current : nextVisibleApps[0]?.id ?? nextState.apps[0]?.id ?? '')
-      if (nextState.apps.some(needsReleaseScan)) {
-        setNotice('Checking newly added apps...')
+      const bootScanStartedAt = Date.now()
+      if (nextState.apps.some((appInfo) => needsBootReleaseScan(appInfo, bootScanStartedAt))) {
+        setNotice('Refreshing release data in staggered batches...')
         const apps = await call<LauncherApp[]>('scan_releases')
         setState((current) => ({ ...current, apps }))
       }
@@ -743,14 +748,23 @@ export default function App() {
     await saveAgentApiPort(appId, String(agentApiDashboard.nextAvailablePort))
   }
 
+  async function runReleaseScan(): Promise<ControlCenterUpdate | null> {
+    await call<LauncherApp[]>('refresh_tools_catalog').catch(() => null)
+    const apps = await call<LauncherApp[]>('scan_releases')
+    const update = await checkControlCenterUpdate(false)
+    setState((current) => ({ ...current, apps }))
+    return update
+  }
+
   async function scanForUpdates() {
     setBusy(true)
-    setNotice('Scanning GitHub releases and Control Center...')
+    setNotice('Scanning GitHub releases in staggered batches...')
     try {
-      await call<LauncherApp[]>('refresh_tools_catalog').catch(() => null)
-      const apps = await call<LauncherApp[]>('scan_releases')
-      const update = await checkControlCenterUpdate(false)
-      setState((current) => ({ ...current, apps }))
+      if (!isTauriRuntime()) {
+        setNotice('Browser preview. Release scans run in the desktop runtime.')
+        return
+      }
+      const update = await runReleaseScan()
       setNotice(update?.updateAvailable ? 'Release scan complete - Control Center update available' : 'Release scan complete')
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error))
@@ -1616,7 +1630,9 @@ export default function App() {
       const nextState = await call<ControlCenterState>('reset_layout')
       setState(nextState)
       setSelectedId(nextState.apps.find((candidate) => candidate.visible)?.id ?? nextState.apps[0]?.id ?? '')
-      setNotice('Layout reset')
+      setNotice('Layout reset. Scanning releases...')
+      const update = await runReleaseScan()
+      setNotice(update?.updateAvailable ? 'Layout reset and scan complete - Control Center update available' : 'Layout reset and scan complete')
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error))
     } finally {

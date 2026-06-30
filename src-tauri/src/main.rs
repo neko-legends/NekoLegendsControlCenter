@@ -33,6 +33,9 @@ const VENICE_MEDIA_LOCAL_ID: &str = "venice-media-local";
 const VENICE_MEDIA_LOCAL_DISPLAY_NAME: &str = "Venice Media Local";
 const AGENT_API_REGISTRY_FILE: &str = "agent-api-registry.json";
 const MAX_INSTALLED_APP_VERSIONS: usize = 2;
+const RELEASE_SCAN_BATCH_SIZE: usize = 3;
+const RELEASE_SCAN_BATCH_DELAY_MS: u64 = 750;
+const RELEASE_SCAN_BATCH_SPREAD_MS: u64 = 100;
 
 static RUNNING_APPS: OnceLock<Mutex<BTreeMap<String, Child>>> = OnceLock::new();
 static WINDOW_SIZE_SAVE_STATE: OnceLock<Mutex<WindowSizeSaveState>> = OnceLock::new();
@@ -361,9 +364,14 @@ fn is_under_development_category(category: &str) -> bool {
         .eq_ignore_ascii_case(UNDER_DEVELOPMENT_CATEGORY)
 }
 
+fn has_public_release(launcher_app: &LauncherApp) -> bool {
+    launcher_app.latest_version.is_some() || !launcher_app.release_options.is_empty()
+}
+
 fn is_coming_soon_app(launcher_app: &LauncherApp) -> bool {
-    launcher_app.status == ToolStatus::ComingSoon
-        || is_under_development_category(&launcher_app.category)
+    !has_public_release(launcher_app)
+        && (launcher_app.status == ToolStatus::ComingSoon
+            || is_under_development_category(&launcher_app.category))
 }
 
 fn normalize_development_status(launcher_app: &mut LauncherApp) {
@@ -373,12 +381,35 @@ fn normalize_development_status(launcher_app: &mut LauncherApp) {
     }
 }
 
+fn promote_released_app(launcher_app: &mut LauncherApp) {
+    launcher_app.status = ToolStatus::Available;
+    if is_under_development_category(&launcher_app.category) {
+        launcher_app.category = default_category();
+    }
+}
+
 fn clear_coming_soon_release_state(launcher_app: &mut LauncherApp) {
     launcher_app.latest_version = None;
     launcher_app.release_url = None;
     launcher_app.release_checked_at = None;
     launcher_app.release_notes = Some("Coming soon.".to_string());
     launcher_app.release_options = Vec::new();
+}
+
+fn apply_no_public_release(launcher_app: &mut LauncherApp, checked_at: &str) {
+    launcher_app.latest_version = None;
+    launcher_app.release_url = Some(format!(
+        "https://github.com/{}/{}/releases",
+        GITHUB_OWNER, launcher_app.repo
+    ));
+    launcher_app.release_checked_at = Some(checked_at.to_string());
+    launcher_app.release_options = Vec::new();
+    if is_coming_soon_app(launcher_app) {
+        normalize_development_status(launcher_app);
+        launcher_app.release_notes = Some("Coming soon.".to_string());
+    } else {
+        launcher_app.release_notes = Some("No public releases found yet.".to_string());
+    }
 }
 
 fn default_categories() -> Vec<String> {
@@ -1040,8 +1071,12 @@ fn merge_catalog_apps(saved: Vec<LauncherApp>, defaults: Vec<LauncherApp>) -> Ve
             if !saved_app.category.trim().is_empty() {
                 app.category = clean_category_label(&saved_app.category);
             }
-            normalize_development_status(&mut app);
-            if app.status == ToolStatus::ComingSoon {
+            if has_public_release(&app) {
+                promote_released_app(&mut app);
+            } else {
+                normalize_development_status(&mut app);
+            }
+            if is_coming_soon_app(&app) {
                 clear_coming_soon_release_state(&mut app);
             }
             normalize_install_state(&mut app);
@@ -1055,7 +1090,7 @@ fn merge_catalog_apps(saved: Vec<LauncherApp>, defaults: Vec<LauncherApp>) -> Ve
             .any(|candidate| candidate.id == default_app.id)
         {
             normalize_development_status(&mut default_app);
-            if default_app.status == ToolStatus::ComingSoon {
+            if is_coming_soon_app(&default_app) {
                 clear_coming_soon_release_state(&mut default_app);
             }
             normalize_install_state(&mut default_app);
@@ -1793,6 +1828,32 @@ async fn fetch_releases(
     } else {
         Ok(releases)
     }
+}
+
+async fn fetch_release_batch(
+    client: &reqwest::Client,
+    batch: Vec<(usize, String)>,
+) -> Vec<(usize, Result<Vec<GitHubRelease>, String>)> {
+    let mut tasks = tokio::task::JoinSet::new();
+    for (index, repo) in batch {
+        let client = client.clone();
+        tasks.spawn(async move {
+            let result = fetch_releases(&client, &repo).await;
+            (index, result)
+        });
+    }
+
+    let mut results = Vec::new();
+    while let Some(joined) = tasks.join_next().await {
+        match joined {
+            Ok(result) => results.push(result),
+            Err(error) => results.push((
+                usize::MAX,
+                Err(format!("Release scan task failed: {error}")),
+            )),
+        }
+    }
+    results
 }
 
 fn executable_score(path: &Path, app_id: &str, repo: &str) -> i32 {
@@ -3086,40 +3147,38 @@ async fn scan_releases(app: AppHandle) -> Result<Vec<LauncherApp>, String> {
     let client = github_client()?;
     let mut apps = read_apps(&app);
     let checked_at = Utc::now().to_rfc3339();
+    let mut release_jobs = Vec::new();
 
-    for launcher_app in apps.iter_mut() {
-        if is_coming_soon_app(launcher_app) {
-            normalize_development_status(launcher_app);
-            launcher_app.latest_version = None;
-            launcher_app.release_url = Some(format!(
-                "https://github.com/{}/{}/releases",
-                GITHUB_OWNER, launcher_app.repo
-            ));
-            launcher_app.release_notes = Some("Coming soon.".to_string());
-            launcher_app.release_checked_at = Some(checked_at.clone());
-            launcher_app.release_options = Vec::new();
-            continue;
+    for (index, launcher_app) in apps.iter().enumerate() {
+        release_jobs.push((index, launcher_app.repo.clone()));
+    }
+
+    for (batch_index, batch) in release_jobs.chunks(RELEASE_SCAN_BATCH_SIZE).enumerate() {
+        if batch_index > 0 {
+            let spread = (batch_index as u64 % 3) * RELEASE_SCAN_BATCH_SPREAD_MS;
+            tokio::time::sleep(Duration::from_millis(RELEASE_SCAN_BATCH_DELAY_MS + spread)).await;
         }
-        match fetch_releases(&client, &launcher_app.repo).await {
-            Ok(releases) => {
-                if let Some(release) = releases.first() {
-                    apply_release_metadata(launcher_app, release, &checked_at);
+
+        let results = fetch_release_batch(&client, batch.to_vec()).await;
+        for (index, result) in results {
+            let Some(launcher_app) = apps.get_mut(index) else {
+                continue;
+            };
+            match result {
+                Ok(releases) => {
+                    if let Some(release) = releases.first() {
+                        apply_release_metadata(launcher_app, release, &checked_at);
+                    }
+                    launcher_app.release_options = release_options(&releases);
+                    promote_released_app(launcher_app);
                 }
-                launcher_app.release_options = release_options(&releases);
-            }
-            Err(error) if error == "No public releases found yet." => {
-                launcher_app.latest_version = None;
-                launcher_app.release_url = Some(format!(
-                    "https://github.com/{}/{}/releases",
-                    GITHUB_OWNER, launcher_app.repo
-                ));
-                launcher_app.release_notes = Some("No public releases found yet.".to_string());
-                launcher_app.release_checked_at = Some(checked_at.clone());
-                launcher_app.release_options = Vec::new();
-            }
-            Err(error) => {
-                launcher_app.release_notes = Some(error);
-                launcher_app.release_checked_at = Some(checked_at.clone());
+                Err(error) if error == "No public releases found yet." => {
+                    apply_no_public_release(launcher_app, &checked_at);
+                }
+                Err(error) => {
+                    launcher_app.release_notes = Some(error);
+                    launcher_app.release_checked_at = Some(checked_at.clone());
+                }
             }
         }
     }
