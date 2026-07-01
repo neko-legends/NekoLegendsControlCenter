@@ -44,7 +44,7 @@ Catalog snapshot: `catalog/tools.json` version 18, updated 2026-06-30.
 | OpenSplit | [neko-legends/OpenSplit](https://github.com/neko-legends/OpenSplit) | Multi-pane terminal harness for AI coding agents, shells, and SSH sessions. |
 | Seamless Image Edit | [neko-legends/SeamlessImageEdit](https://github.com/neko-legends/SeamlessImageEdit) | Create seamless and tileable texture outputs from images or folders with seam repair, flattening, and 2x2 preview. |
 | Sprite Atlas Packer | [neko-legends/sprite-atlas-packer](https://github.com/neko-legends/sprite-atlas-packer) | Turn loose sprite frames into deterministic TexturePacker-compatible PNG/WebP atlases. |
-| Venice Media | [neko-legends/VeniceMediaLocal](https://github.com/neko-legends/VeniceMediaLocal) | Local Venice API media workspace for images, video, music, voice, and cleanup. |
+| Venice Media | [neko-legends/venice-media-local](https://github.com/neko-legends/venice-media-local) | Local Venice API media workspace for images, video, music, voice, and cleanup. |
 
 ### Hosted Demos And Fun Stuff
 

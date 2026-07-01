@@ -185,7 +185,7 @@
     {
       "id": "venice-media-local",
       "name": "Venice Media",
-      "repo": "VeniceMediaLocal",
+      "repo": "venice-media-local",
       "description": "Local Venice API media workspace for images, video, music, voice, and cleanup.",
       "accent": "#34c6a3",
       "icon": "VM",

@@ -22,7 +22,7 @@ $apps = @(
   @{ Code = 'MR'; Name = 'MarkRush'; Root = Join-Path $suiteRoot 'MarkRush'; MarkRush = $true },
   @{ Code = 'OS'; Name = 'OpenSplit'; Root = Join-Path $suiteRoot 'OpenSplit'; Tauri = 'src-tauri\icons' },
   @{ Code = 'SI'; Name = 'SeamlessImageEdit'; Root = Join-Path $suiteRoot 'SeamlessImageEdit'; Tauri = 'src-tauri\icons' },
-  @{ Code = 'VM'; Name = 'VeniceMediaLocal'; Root = Join-Path $suiteRoot 'VeniceMediaLocal'; Tauri = 'src-tauri\icons' },
+  @{ Code = 'VM'; Name = 'VeniceMediaLocal'; Root = Join-Path $suiteRoot 'venice-media-local'; Tauri = 'src-tauri\icons' },
   @{ Code = 'PP'; Name = 'PurplePlanet'; Root = Join-Path $suiteRoot 'PurplePlanet\PurplePlanet\src\PurplePlanet'; DotNetIcon = 'Assets\PurplePlanet.ico'; DotNetPng = 'Assets\PurplePlanet-256.png' },
   @{ Code = 'SG'; Name = 'StarGaze'; Root = Join-Path $suiteRoot 'StarGaze\StarGaze\src\StarGaze'; DotNetIcon = 'Assets\StarGaze.ico'; DotNetPng = 'Assets\StarGaze-256.png' }
 )
